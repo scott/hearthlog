@@ -12,6 +12,9 @@ Go HTTP service and html/template rendering; embedded self-hosted htmx and CSS; 
 ## Acceptance
 A synthetic Go app emits already-redacted events via a bounded asynchronous slog handler. Authenticated native batches commit atomically with receipts and become searchable in the HTML interface. Replay is idempotent per native batch for 48h; pre-ack crash loss and OTLP duplicates are explicit limits. Workspace/source isolation, bounded query/Live resources, retention, checkpoint pressure and online backup/restore have reproducible evidence before adoption.
 
+## Final twelve-slice deliverable
+A versioned deployable binary for declared tested targets, reproducible build/toolchain/CGO/SQLite-feature instructions and checksums; generic deployment/supervision/upgrade/migration/rollback/backup/restore instructions; a compilable synthetic Go slog service-integration guide and only verified logs-only OTLP subset guidance. An independent clean install using only these docs must integrate a demo service, emit/search/Live a redacted event, restart and prove persistence, verify recovery and safe disable. No universal static/platform support or existing build is claimed.
+
 ## First vertical slice
 Synthetic local Go app → authenticated batch → SQLite commit/FTS → searchable HTML/htmx results and typed detail. Separate read/write credentials and loopback binding. Demonstration is not remote-readiness or production approval.
 

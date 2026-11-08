@@ -10,6 +10,8 @@ SQLite intentionally keeps a low-volume single-node MVP simple. PostgreSQL can b
 - [Implementation plan](docs/PLAN.md)
 - [Implementation slices and GitHub issues](docs/SLICES.md)
 
+The final twelve-slice deliverable must include a versioned binary for declared tested targets, reproducible build and checksum verification, generic deployment/upgrade/backup/recovery instructions, and a compilable synthetic service-integration guide. Fresh installation and demo-service search/Live/restart persistence must be proven using only those instructions. This is planned acceptance, not an available release or universal static binary claim.
+
 The investigation workflow takes inspiration from Better Stack Telemetry while using original UI design. Logs only: no metrics/traces platform, billing or public signup.
 
 Examples and test evidence must be synthetic. Do not contribute real application configuration, credentials, environment files, database snapshots or production log captures. Runtime secrets and deployment-specific settings stay outside version control. No run/install instructions are claimed until a runnable slice exists.
