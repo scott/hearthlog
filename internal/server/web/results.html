@@ -1,0 +1,24 @@
+{{define "results"}}
+<div id="results-region" data-fragment-kind="results" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}">
+<h2 id="results-heading" tabindex="-1">Results</h2>
+{{if .Rows}}
+<ul class="results">
+{{range .Rows}}
+<li data-event-id="{{.EventID}}" data-ingest-id="{{.IngestID}}" data-severity="{{.SeverityNumber}}" data-time="{{.EventTime}}" data-source="{{.SourceID}}">
+<time datetime="{{.EventTime}}">{{.EventTime}}</time>
+<span class="source">{{.SourceID}}</span>
+<span class="severity">{{.SeverityText}}</span>
+<span class="message">{{.Message}}</span>
+<form method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML">
+{{template "context" $}}
+<input type="hidden" name="id" value="{{.IngestID}}">
+<button type="submit" id="event-{{.IngestID}}-open">Open details</button>
+</form>
+</li>
+{{end}}
+</ul>
+{{else}}
+<p class="no-results">No matching events</p>
+{{end}}
+</div>
+{{end}}
