@@ -8,8 +8,8 @@
 |---|---|---|---|
 | Active | "Live: Receiving" | Poll succeeds; cursor advances | — |
 | Paused | "Live: Paused" | User clicks **Pause**; tab hidden | **Resume** |
-| Disconnected | "Live: Disconnected" | Network failure only | **Reconnect** |
-| Gap | "Live: Gap detected" | Catchup exceeds bounds; cursor reset | **Search gap** |
+| Disconnected | "Live: Disconnected" | Network failure, client timeout, HTTP 504, transient 5xx (excl. 503) | **Reconnect** |
+| Gap | "Live: Gap detected" | Catchup exceeds bounds (410 or >5k/30s); cursor reset | **Search gap** |
 | Disabled (No JS) | "Live requires JavaScript. Use Refresh for historical search." | htmx unavailable; JS disabled | **Refresh** (triggers historical form) |
 
 ## Polling Mechanics
@@ -23,9 +23,40 @@
 *   **Deduplication:** Events deduplicated by `ingest_id`. Filters and generation are fixed for the Live session.
 *   **Termination:** Cancellation on Pause, tab hidden/closed, auth denied, or network loss. No backlog accumulation during pause. No hidden background polls.
 
-## Resume and Catchup
+## Failure Handling
 
-*   **Resume:** User clicks **Resume**.
+| HTTP/Condition | Visible Copy | Recovery Action | Note |
+|---|---|---|---|
+| Network, Timeout, 504, 5xx (transient, excl. 503) | "Live: Disconnected" | **Reconnect** | Stops polling. No auto-retry. |
+| 429 / 503 | "Live: Throttled" | **Reconnect** | Disabled until `Retry-After` (or 5s fallback) elapses. |
+| 410 | "Live: Gap detected" | **Search gap** | Clears cursor. Requires fresh historical query. |
+| 400 / 422 | "Live: Query invalid" | **Edit search** | Clears invalid cursor. Requires fresh validated query. No unchanged retry. |
+| 401 / 403 | "Access denied" | **Sign in** | Terminal. Invokes shared stop for ALL Live generations (incl. stale/session). Clears protected DOM. Requires fresh authorized start. No Reconnect. |
+| Other | "Live: Error" | **New search** | Stops polling. Explicit manual restart. |
+
+**Shared Stop Transition:**
+1. Mark state inactive.
+2. Disable periodic scheduling.
+3. Cancel/abort pending request.
+4. Remove dedicated polling trigger element (not row region).
+5. Invalidate generation.
+
+**Event Handlers:**
+*   `htmx:beforeOnLoad`: Classify HTTP status; invoke shared stop transition for current-generation failed polls.
+*   `htmx:sendError` / `htmx:timeout`: Trigger idempotent stop transition.
+*   `htmx:beforeRequest`: Cancel via `preventDefault` if inactive; remove dedicated trigger element.
+
+**Rules:**
+*   Failed polls retain last accepted cursor unless invalidation clears it.
+*   Stale non-auth failures discarded; stale auth denial clears globally.
+*   Auth denial dominates, clearing all protected DOM.
+*   Rows remain stale on transient errors, not on denial.
+
+## Recovery and Catchup
+
+*   **Resume/Reconnect:** Explicit click required. Reauthorizes and enforces ≤5,000 events AND ≤30s catchup; else Gap. Starts fresh generation, at most one probe; no retry queue. Only validated successful probe reenables 1s scheduling.
+*   **Retry-After:** Validated nonnegative integer seconds. Valid delay respected without shortening. Absent/malformed uses 5s. Unrepresentable stays stopped. Deadline expiry does not auto-rearm.
+*   **State Lockout:** Invalid/Query/Auth states cannot bypass required actions via Reconnect.
 *   **Catchup Bounds:** Supported if ≤5,000 events AND ≤30 seconds.
 *   **Gap Handling:** If bounds are exceeded, UI displays "Live: Gap detected". The **Search gap** action redirects to Historical Search with the explicit absolute time interval of the gap pre-filled.
 *   **Guarantee:** Live is a view, not an export guarantee. Gaps are explicitly told to the user.

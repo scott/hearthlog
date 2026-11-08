@@ -4,6 +4,8 @@ This document specifies the HTTP/htmx transport contract for the Hearthlog inves
 
 ## Routing and Fallback
 
+Live Polls use `hx-post` to fixed `/investigate/live`. Bodies carry stable typed filter context, cursor, and generation in bounded native-v1 (≤4KiB) with session-bound CSRF. All polls undergo reauthorization. No raw terms appear in URLs; no server last-query cache or persistent browser state is used.
+
 All interactions use fixed same-origin routes. `HX-Request` is a routing hint only, never an authorization signal.
 
 | Interaction | Route | Method | Target |
@@ -11,7 +13,7 @@ All interactions use fixed same-origin routes. `HX-Request` is a routing hint on
 | Root | `/investigate` | GET | *(full page)* |
 | Search/Filter | `/investigate/search` | POST | `#results-region` |
 | Detail | `/investigate/detail` | POST | `#detail-region` |
-| Live Poll | `/investigate/live` | GET | `#live-region` |
+| Live Poll | `/investigate/live` | POST | `#live-region` |
 | Back/Pagination | `/investigate/search` | POST | `#results-region` |
 
 **No-JavaScript Fallback:**
@@ -36,6 +38,10 @@ All interactions use fixed same-origin routes. `HX-Request` is a routing hint on
 *   **htmx Config:** `selfRequestsOnly: true`, `allowEval: false`, `allowScriptTags: false`, `reportValidityOfForms: true`, timeout 5000ms.
 *   **History:** `hx-history: false`, `historyCacheSize: 0`, `historyRestoreAsHxRequest: false`, `hx-push-url: false`, `hx-replace-url: false`.
 *   **CSP:** Strict same-origin. No inline handlers/eval. `template.HTML`/JS/URL bypasses are prohibited. Escaping prevents `hx-`/`data-hx-` injection.
+
+## Live Failure Specifics
+
+Live failures invoke the shared stop transition from [LIVE.md](LIVE.md) before rendering status. `htmx:beforeOnLoad` classifies HTTP status; `htmx:sendError`/`htmx:timeout` trigger idempotent stop. Classification Order: 401/403/session denial globally stops+clears; stale non-auth failures are ignored; current-generation non-2xx failures use LIVE state matrix with safe constant status (no untrusted body insertion), retaining authorized stale rows and respecting Retry-After even without error-fragment markers. Only an otherwise successful 2xx containing unexpected login HTML or missing/invalid expected markers triggers fail-closed global stop/clear before fixed authenticated full-page navigation. No automatic resume. Stale non-auth events are rejected by generation guards. Auth/session denial globally stops/clears all Live generations. Reconnect is explicit after `Retry-After`/catchup validation; status rendering alone never restarts polling. Historical semantics are unchanged.
 
 ## Error Handling and Privacy
 
