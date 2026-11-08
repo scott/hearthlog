@@ -1,0 +1,16 @@
+# Agent development guidance
+
+## Architecture and scope
+Go, SQLite and htmx for a low-volume single-node logs-only MVP. Use Go html/template with escaped server-rendered partials, SQLite WAL/FULL commit durability, bounded single writer/readers and FTS5. Keep storage functions separate from domain/HTTP handlers without building a multi-backend framework. PostgreSQL is a later option only after a measured, explicitly accepted architecture decision; do not implement it speculatively. Read README.md, docs/BRIEF.md, docs/PLAN.md, docs/SLICES.md and the relevant issue before work.
+
+## Working agreement
+Develop and test implementation locally on the developer's own computer; do not use cloud agents for implementation. Work on one slice per branch and pull request, honor dependency issues, keep diffs small and scoped, and stop at acceptance. Do not silently expand requirements or bypass failing gates. Do not merge your own work: an independent reviewer must reproduce relevant tests before approval and merge. Do not deploy, spend, or delete operational data without explicit approval. Planning/issue state is not evidence of implemented behavior.
+
+## Evidence and commands
+Use actual repository commands once present. If build/test commands do not exist, document and verify them in the implementing slice; do not invent make targets or claim commands were run. Record reproducible commands, supported target/toolchain and runtime versions, synthetic fixtures and sanitized outcomes; distinguish required low-volume baseline from optional stress diagnostics. No application test success follows merely from documentation checks or absent CI.
+
+## Required final delivery
+The twelve-slice result includes a versioned deployable binary for explicitly tested targets, reproducible build/CGO/runtime and SQLite FTS5/JSON requirements, version/checksum/startup verification, and generic deployment/service-supervision, upgrade/schema-migration/rollback, backup/restore and service-integration guides. Do not promise universally static binaries or untested platforms. Include a compilable synthetic Go slog integration with source-token lifecycle, endpoint placeholders, pre-transmission redaction, bounded batching/retries, flush/shutdown/error/drop counters and safe disable. OTLP instructions cover only the implemented verified logs-only subset. Independently prove a clean install from the produced binary using only the docs, integrate demo service, emit/search/Live/restart-persist an event and verify recovery. Follow the detailed acceptance in docs/PLAN.md and the final readiness issue.
+
+## Public repository safety
+Use only generic synthetic names and placeholder settings. Never commit secrets, real application configuration, environment files, databases/WAL/SHM/backups, real logs, internal identities/paths/hostnames or personal details. Keep runtime secrets and deployment-specific values outside version control. Configuration examples belong in Markdown only with placeholders. Scan proposed diffs and all screenshots/log evidence for leaks before posting. Do not weaken authentication, CSRF, workspace/source isolation, escaping, redaction, resource bounds or acknowledged-data durability for convenience.
