@@ -13,6 +13,7 @@ SQLite intentionally keeps a low-volume single-node MVP simple. PostgreSQL can b
 - [Security/public-content contract](docs/contracts/SECURITY-V1.md)
 - [SQLite/target ADR](docs/adr/0001-sqlite-target.md)
 - [Slice 00 capability and review evidence](docs/evidence/SLICE00.md)
+- [Investigation Flow](docs/ui/INVESTIGATION.md)
 
 The final twelve-slice deliverable must include a versioned binary for declared tested targets, reproducible build and checksum verification, generic deployment/upgrade/backup/recovery instructions, and a compilable synthetic service-integration guide. Fresh installation and demo-service search/Live/restart persistence must be proven using only those instructions. This is planned acceptance, not an available release or universal static binary claim.
 
