@@ -17,21 +17,24 @@ if(genInput)genInput.value=String(gen);
 if(seqInput)seqInput.value=String(seq);
 }
 
-var guidance={
-"422":"Query too broad. Narrow the time window, then run Search.",
-"410":"Results expired. Rerun query.",
-"504":"Query timed out. Narrow the time window, then run Search.",
-"503":"Service busy. Wait, then run Search again."
-};
-var notices={
-"invalid_query":"Query is invalid",
-"unsupported_path":"Attribute path not supported",
-"row_expired":"Row expired. Rerun query. This row is past the retention window.",
-"not_found":"Event not found"
-};
+var guidance=Object.create(null);
+guidance["422"]="Query too broad. Narrow the time window, then run Search.";
+guidance["410"]="Results expired. Rerun query.";
+guidance["504"]="Query timed out. Narrow the time window, then run Search.";
+guidance["503"]="Service busy. Wait, then run Search again.";
+var notices=Object.create(null);
+notices["invalid_query"]="Query is invalid";
+notices["unsupported_path"]="Attribute path not supported";
+notices["row_expired"]="Row expired. Rerun query. This row is past the retention window.";
+notices["not_found"]="Event not found";
+var statusOwnsFocus=false;
 
 function statusEl(){return doc.getElementById("status");}
 function resultsEl(){return doc.getElementById("results-region");}
+function focusStatus(st){
+statusOwnsFocus=true;
+st.focus();
+}
 
 function clearNamed(form,name){
 var one=form.querySelector('input[name="'+name+'"]');
@@ -87,7 +90,7 @@ if((code==="504"||code==="422"||code==="503")&&region){
 region.setAttribute("data-stale","true");
 }
 enableButtons();
-st.focus();
+focusStatus(st);
 }
 
 function showNotice(text){
@@ -95,7 +98,7 @@ var st=statusEl();
 if(!authed||!st)return;
 st.textContent=text;
 enableButtons();
-st.focus();
+focusStatus(st);
 }
 
 function onAuthFail(){
@@ -111,7 +114,7 @@ var a=doc.createElement("a");
 a.href="/login";
 a.textContent="Sign in";
 st.appendChild(a);
-st.focus();
+focusStatus(st);
 }
 }
 
@@ -122,7 +125,7 @@ var meta=xhr?reqMeta.get(xhr):null;
 if(!meta||meta.gen!==gen||meta.seq!==seq){return;}
 if(pendingAbort===xhr){try{pendingAbort.abort();}catch(err){}pendingAbort=null;}
 var st=statusEl();
-if(st){st.textContent="Request failed. Retry manually.";st.focus();}
+if(st){st.textContent="Request failed. Retry manually.";focusStatus(st);}
 var btns=doc.querySelectorAll("button[type=submit]");
 for(var i=0;i<btns.length;i++){
 btns[i].disabled=false;
@@ -189,6 +192,7 @@ if(u.origin!==location.origin){e.preventDefault();return;}
 
 htmx.on("htmx:afterSwap",function(e){
 pendingAbort=null;
+statusOwnsFocus=false;
 var d=e.detail;
 var fk=d.xhr.getResponseHeader("X-Fragment-Kind");
 var region=resultsEl();
@@ -246,7 +250,7 @@ var note=doc.getElementById("status");
 function say(text){
 if(!note)return;
 note.textContent=text;
-note.focus();
+focusStatus(note);
 }
 if(!pre||!navigator.clipboard||!navigator.clipboard.writeText){
 say("Copy unavailable; select JSON below");
@@ -297,5 +301,8 @@ for(var i=0;i<btns.length;i++){
 btns[i].disabled=false;
 btns[i].removeAttribute("aria-busy");
 }
+if(!statusOwnsFocus)return;
+var st=statusEl();
+if(st)st.focus();
 });
 })();

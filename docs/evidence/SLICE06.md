@@ -23,25 +23,26 @@ CGO_ENABLED=1 go vet -tags "fts5 sqlite_omit_load_extension" ./...
 node --test internal/server/web/app.test.js
 ```
 
-Node: 7 pass, 0 fail. Added `status notices hit the live node` and
-`submit disables the submitter after the turn`. The earlier node tests are unchanged.
+Node: 8 pass, 0 fail. Added `status notices hit the live node`,
+`submit disables the submitter after the turn`, and
+`notice focus survives a late results settle`. The earlier node tests are unchanged.
 `go mod verify` reported all modules verified. `gofmt -l` was empty. `go vet`
 was clean.
 
 Race package results (0 failures):
 
 ```text
-ok  example.invalid/hearthlog/cmd/hearthlog             1.015s
-ok  example.invalid/hearthlog/examples/slogservice      1.026s
-ok  example.invalid/hearthlog/internal/model            1.049s
-ok  example.invalid/hearthlog/internal/server          12.561s
-ok  example.invalid/hearthlog/internal/storage/sqlite  14.515s
-ok  example.invalid/hearthlog/internal/emitter         21.835s
+ok  example.invalid/hearthlog/cmd/hearthlog             1.013s
+ok  example.invalid/hearthlog/examples/slogservice      1.030s
+ok  example.invalid/hearthlog/internal/model            1.045s
+ok  example.invalid/hearthlog/internal/server          12.625s
+ok  example.invalid/hearthlog/internal/storage/sqlite  14.525s
+ok  example.invalid/hearthlog/internal/emitter         21.436s
 ```
 
 Same command with `-json`: 126 top-level tests, 332 including subtests,
 0 failures (cmd 1, examples 4, emitter 38/108, model 11/76, server 39/82,
-sqlite 33/61). Node: 7 pass, 0 fail. The server package includes
+sqlite 33/61). Node: 8 pass, 0 fail. The server package includes
 `TestBrowserE2E`.
 
 gitleaks v8.30.1 is not on PATH here. The leak scan is the CI step inside
@@ -100,18 +101,30 @@ page, capped at 2400px where the detail page is taller.
 
 | Item | Proof |
 |---|---|
-| B1. Notices write to the `#status` that is in the document after a results or detail swap. 400 and 404 use the server copy for `invalid_query`, `unsupported_path`, `row_expired`, and `not_found`. The response body is not inserted | `app.js` looks up `#status` when it writes. `fail` sets `X-Notice`. Node test `status notices hit the live node` replaces the node, then checks 422, 410, 504, 503, 400, 404 `row_expired`, 404 `not_found`, a stale 400, a network error, and 401. `TestClientContracts` checks the `X-Notice` header for `invalid_query` and `row_expired`. `TestBrowserE2E` steps `too-broad`, `row-expired`, `cursor-expired`, and `session-expired` run after a successful search |
+| B1. Notices write to the `#status` that is in the document after a results or detail swap. 400 and 404 use the server copy for `invalid_query`, `unsupported_path`, `row_expired`, and `not_found`. The response body is not inserted | `app.js` looks up `#status` when it writes. `fail` sets `X-Notice`. Node test `status notices hit the live node` replaces the node, then checks 422, 410, 504, 503, 400, 404 `row_expired`, 404 `not_found`, a stale 400, a network error, 401, and the prototype names `constructor` and `toString`. `TestClientContracts` checks the `X-Notice` header for `invalid_query` and `row_expired`. `TestBrowserE2E` steps `too-broad`, `row-expired`, `cursor-expired`, and `session-expired` run after a successful search |
 | B2. The clicked submit button keeps its `intent` | The submit listener uses `e.submitter` and disables it on the next turn. Node test `submit disables the submitter after the turn`. Browser steps `remove-term` (alpha/beta becomes beta) and `save-open` (Open morning returns the checkout row, not "Query is invalid") |
 | B3. Enter in the filters runs Search | `#btn-search-implicit` is the first submit button, `tabindex="-1"`, `intent=search`, same `hx-post` target as the visible Search. `TestClientContracts` checks that order. Browser step `enter-search` keeps the term and stays on the same document. Step `no-js` is a full page and still keeps the term |
 | B4. Back to results focuses the Open details button that opened the detail | The results heading is autofocused only when `OriginID` is empty. The matching `event-N-open` button is autofocused when the origin is on the page. `TestClientContracts` checks both HTML shapes. Browser steps `back-focus` and `no-js` check `document.activeElement` |
-| B5. Headless browser walk | `TestBrowserE2E` drives Chrome over the real server. CI installs Chrome before `go test`, so the race run includes it. A missing Chrome binary fails the test |
+| B5. Headless browser walk | `TestBrowserE2E` drives Chrome over the real server. CI installs Chrome, pins Node 22, and runs `go test -run TestBrowserE2E -v` before the race suite. A missing Chrome binary fails the test |
 
 Button text is white on `#1565c0` (5.75:1). Hover is white on `#0d47a1` (8.63:1). Disabled is `#1a1a2e` on `#d7deea` (12.61:1), with no opacity. Links stay `--accent` `#4a9eff` on `#1a1a2e` (6.19:1). `TestClientContracts` locks those declarations. The htmx config sets `attributesToSettle` to `["class"]`. The browser walk fails if Chrome logs a CSP refusal.
 
 The new shots are the too-broad notice after a successful search, with the earlier hostile row still on the page at 390px. Names are `demo-api`, `commonwide`, and `synthetic hostile`. No real host, token, or log text.
 
+A results swap schedules htmx settle for 20ms. Settle focuses the first `[autofocus]` in the new fragment, which is `#results-heading` when the search has no origin. If the next submit returns a notice inside that window, the notice focuses `#status` and the pending settle then moves focus to the heading. `htmx:afterSettle` runs after that autofocus. When the notice is still the current focus owner, the handler focuses `#status` again. A later successful swap clears that owner, so Back to results and a fresh search keep the open-button and heading focus. The heading autofocus attribute stays, including for the no-JS page.
+
+`too-broad` now submits the 422 query from the hostile search's `htmx:afterSwap`, then checks focus 60ms later. `gap0` does the same with a fast invalid time, which returns inside the settle window, and checks that focus is still `#status`. `guidance` and `notices` are `Object.create(null)`, so a header value of `constructor` or `toString` is not a sentence.
+
+CI pins Node 22 with `actions/setup-node` at `949feb2413d6458794dcd2491c4babbbce0c15c1` (v7.1.0). The browser walk needs the global `WebSocket`. The job then runs:
+
 ```bash
-CGO_ENABLED=1 go test -count=1 -tags "fts5 sqlite_omit_load_extension" -run TestBrowserE2E -timeout 180s -v ./internal/server/
+go test -count=1 -tags "fts5 sqlite_omit_load_extension" -run TestBrowserE2E -timeout 180s -v ./internal/server/
+```
+
+Ten local runs, 0 failures:
+
+```bash
+CGO_ENABLED=1 go test -count=10 -tags "fts5 sqlite_omit_load_extension" -run TestBrowserE2E -timeout 15m -v ./internal/server/
 ```
 
 ```text
@@ -125,6 +138,7 @@ CGO_ENABLED=1 go test -count=1 -tags "fts5 sqlite_omit_load_extension" -run Test
     browser_e2e_test.go:261: STEP filter
     browser_e2e_test.go:261: STEP hostile
     browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
     browser_e2e_test.go:261: STEP row-expired
     browser_e2e_test.go:261: NEED_CLOCK row
     browser_e2e_test.go:261: STEP cursor-expired
@@ -133,9 +147,189 @@ CGO_ENABLED=1 go test -count=1 -tags "fts5 sqlite_omit_load_extension" -run Test
     browser_e2e_test.go:261: STEP no-js
     browser_e2e_test.go:261: STEP session-expired
     browser_e2e_test.go:261: PASS
---- PASS: TestBrowserE2E (1.84s)
+--- PASS: TestBrowserE2E (1.63s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.72s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.65s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.71s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.66s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.59s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.62s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.60s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.71s)
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP gap0
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.71s)
 PASS
-ok  	example.invalid/hearthlog/internal/server	1.847s
+ok  	example.invalid/hearthlog/internal/server	16.612s
 ```
 
 The same test passed again inside the race run above. Screenshots used `E2E_SHOT_DIR=docs/evidence/slice06`.

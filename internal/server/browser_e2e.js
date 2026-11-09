@@ -375,8 +375,20 @@ async function main() {
       document.getElementById('pred-1').value = '';
       document.querySelector('#filters input[name=pval]').value = '';
       document.getElementById('msg-term-1').value = 'hostile';
+      document.body.addEventListener('htmx:afterSwap', function onSwap(ev) {
+        const info = ev.detail && ev.detail.pathInfo;
+        const path = (info && info.requestPath) || '';
+        if (path.indexOf('/search') === -1) return;
+        document.body.removeEventListener('htmx:afterSwap', onSwap);
+        document.getElementById('msg-term-1').value = 'commonwide';
+        document.getElementById('pred-1').value = 'task.attempt';
+        document.querySelector('#filters select[name=op]').value = 'eq';
+        document.querySelector('#filters select[name=ptype]').value = 'integer';
+        document.querySelector('#filters input[name=pval]').value = '999';
+        document.getElementById('btn-search').click();
+      });
+      document.getElementById('btn-search').click();
     })()`);
-    await clickId(send, session, 'btn-search');
     await waitFn(send, session, `(() => {
       const region = document.getElementById('results-region');
       return region && region.textContent.includes('<script>alert(1)</script>') ? 'yes' : '';
@@ -385,14 +397,6 @@ async function main() {
     if (hostile !== 'ok') throw new Error('hostile markup became a node');
 
     say('STEP too-broad');
-    await ev(send, session, `(() => {
-      document.getElementById('msg-term-1').value = 'commonwide';
-      document.getElementById('pred-1').value = 'task.attempt';
-      document.querySelector('#filters select[name=op]').value = 'eq';
-      document.querySelector('#filters select[name=ptype]').value = 'integer';
-      document.querySelector('#filters input[name=pval]').value = '999';
-    })()`);
-    await clickId(send, session, 'btn-search');
     await waitFn(send, session, `(() => {
       const el = document.getElementById('status');
       if (!el || !el.isConnected) return '';
@@ -400,12 +404,38 @@ async function main() {
       if (!region || !region.textContent.includes('synthetic hostile')) return '';
       return el.textContent === 'Query too broad. Narrow the time window, then run Search.' ? 'yes' : '';
     })()`, 20000);
+    await sleep(60);
     const broadFocus = await ev(send, session, `document.activeElement && document.activeElement.id`);
     if (broadFocus !== 'status') throw new Error('too-broad focus ' + broadFocus);
     await shot(send, session, 'notice-after-search-desktop.png');
     await metrics(send, session, 390, 844, true);
     await shot(send, session, 'notice-after-search-390.png');
     await metrics(send, session, 1280, 900, false);
+
+    say('STEP gap0');
+    const gapArmed = await ev(send, session, `(() => {
+      document.body.addEventListener('htmx:afterSwap', function onSwap(ev) {
+        const info = ev.detail && ev.detail.pathInfo;
+        const path = (info && info.requestPath) || '';
+        if (path.indexOf('/search') === -1) return;
+        document.body.removeEventListener('htmx:afterSwap', onSwap);
+        document.getElementById('time-select').value = 'custom';
+        document.getElementById('f-from').value = 'not-a-time';
+        document.getElementById('f-to').value = 'not-a-time';
+        document.getElementById('btn-search').click();
+      });
+      document.getElementById('time-select').value = '15m';
+      document.getElementById('pred-1').value = '';
+      document.querySelector('#filters input[name=pval]').value = '';
+      document.getElementById('msg-term-1').value = 'checkout';
+      document.getElementById('btn-search').click();
+      return 'armed';
+    })()`);
+    if (gapArmed !== 'armed') throw new Error('gap0 arm ' + gapArmed);
+    await waitFn(send, session, `document.getElementById('status') && document.getElementById('status').textContent === 'Query is invalid' ? 'yes' : ''`);
+    await sleep(60);
+    const gapFocus = await ev(send, session, `document.activeElement && document.activeElement.id`);
+    if (gapFocus !== 'status') throw new Error('gap0 focus ' + gapFocus);
 
     say('STEP row-expired');
     await ev(send, session, `(() => {

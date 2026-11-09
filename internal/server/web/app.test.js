@@ -330,6 +330,10 @@ test('status notices hit the live node', () => {
   assert.strictEqual(live.textContent, 'Row expired. Rerun query. This row is past the retention window.');
   assert.strictEqual(fire(404, 'not_found'), true);
   assert.strictEqual(live.textContent, 'Event not found');
+  assert.strictEqual(fire(400, 'constructor'), true);
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
+  assert.strictEqual(fire(400, 'toString'), true);
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
   const kept = live.textContent;
   env.listeners['htmx:afterRequest']({
     detail: {
@@ -356,6 +360,43 @@ test('status notices hit the live node', () => {
   assert.strictEqual(live.textContent, 'Session expired. ');
   assert.strictEqual(live.link.href, '/login');
   assert.strictEqual(live.link.textContent, 'Sign in');
+});
+
+test('notice focus survives a late results settle', () => {
+  const env = makeEnv();
+  let focused = '';
+  env.elements['status'].focus = () => { focused = 'status'; };
+  env.elements['results-heading'].focus = () => { focused = 'results-heading'; };
+  env.elements['detail-heading'].focus = () => { focused = 'detail-heading'; };
+  env.elements['event-7-open'] = { focus() { focused = 'event-7-open'; } };
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  function header(kind, origin) {
+    return (h) => {
+      if (h === 'X-Fragment-Kind') return kind;
+      if (h === 'X-Origin') return origin;
+      return '';
+    };
+  }
+  env.listeners['htmx:afterSwap']({ detail: { xhr: { getResponseHeader: header('results', '') } } });
+  assert.strictEqual(focused, 'results-heading');
+  const xhr = {
+    status: 422,
+    abort() {},
+    getResponseHeader: () => '',
+    responseURL: 'http://localhost:8080/investigate/search'
+  };
+  env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+  env.listeners['htmx:beforeRequest']({ detail: { xhr, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+  env.listeners['htmx:afterRequest']({ detail: { xhr } });
+  assert.strictEqual(focused, 'status');
+  env.elements['results-heading'].focus();
+  assert.strictEqual(focused, 'results-heading');
+  env.listeners['htmx:afterSettle']({});
+  assert.strictEqual(focused, 'status');
+  env.listeners['htmx:afterSwap']({ detail: { xhr: { getResponseHeader: header('results', '7') } } });
+  assert.strictEqual(focused, 'event-7-open');
+  env.listeners['htmx:afterSettle']({});
+  assert.strictEqual(focused, 'event-7-open');
 });
 
 test('submit disables the submitter after the turn', () => {
