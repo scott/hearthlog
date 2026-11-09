@@ -19,6 +19,7 @@ SQLite intentionally keeps a low-volume single-node MVP simple. PostgreSQL can b
 - [Go slog SDK integration guide (Slice 03)](docs/SDK.md) and [evidence](docs/evidence/SLICE03.md)
 - [Slice 04 single-writer replay evidence](docs/evidence/SLICE04.md)
 - [Slice 05 search and keyset cursor evidence](docs/evidence/SLICE05.md)
+- [Slice 06 investigation UI evidence](docs/evidence/SLICE06.md)
 
 A database written before the receipts schema will not open. The process logs that the database is from an older slice and exits. Start it with a new `-state` directory. There is no in-place upgrade from that older file. A Slice 04 database still opens, and missing search indexes are created on startup.
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -42,6 +43,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Retry-After", "5")
+		if strings.HasPrefix(r.URL.Path, "/investigate") {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(busyPage))
+			return
+		}
 		safeError(w, http.StatusServiceUnavailable, "busy", "Service busy", true)
 		return
 	}

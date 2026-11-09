@@ -13,36 +13,120 @@
 </head>
 <body>
 <a class="skiplink" href="#investigation">Skip to main content</a>
-<header><h1>Hearthlog</h1><p class="banner">Walking skeleton. Historical pages use a signed cursor. No Live.</p></header>
+<header><h1>Hearthlog</h1><p class="banner">Historical search. Live is separate and is not on this page.</p></header>
 <main id="investigation" tabindex="-1" hx-sync="#investigation:replace">
-<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+<div class="layout">
+{{template "filters" .}}
+<div class="content">
+{{template "results-body" .}}
+{{template "detail-body" .}}
+</div>
+</div>
+<p id="status" aria-live="polite" tabindex="-1" data-code="{{.Code}}"{{if eq .Focus "status"}} autofocus{{end}}>{{.Status}}</p>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "filters"}}
+<form id="filters" method="POST" action="/investigate/search">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="generation" value="{{.Generation}}">
 <input type="hidden" name="sequence" value="{{.Sequence}}">
 <fieldset>
-<legend>Search</legend>
-<label for="f-source">Source</label>
-<input type="text" id="f-source" name="source" value="{{first .Query.Sources}}" readonly>
+<legend>Investigate</legend>
+{{if and .SourcesOK (not .Sources)}}
+<p>No sources yet</p>
+<p><a href="/investigate">Register source</a></p>
+{{end}}
+<label for="source-select">Sources</label>
+<select id="source-select" name="source" multiple{{if eq .Focus "source"}} autofocus{{end}}>
+{{range .Sources}}
+<option value="{{.ID}}"{{if hasSource $.Query.Sources .ID}} selected{{end}}>{{.Service}} ({{.Environment}})</option>
+{{end}}
+</select>
+<label for="time-select">Time</label>
+<select id="time-select" name="preset">
+<option value="5m"{{if eq $.Preset "5m"}} selected{{end}}>5m</option>
+<option value="15m"{{if eq $.Preset "15m"}} selected{{end}}>15m</option>
+<option value="1h"{{if eq $.Preset "1h"}} selected{{end}}>1h</option>
+<option value="24h"{{if eq $.Preset "24h"}} selected{{end}}>24h</option>
+<option value="custom"{{if eq $.Preset "custom"}} selected{{end}}>Custom</option>
+</select>
 <label for="f-from">From (UTC)</label>
 <input type="text" id="f-from" name="from" value="{{.Query.From}}">
 <label for="f-to">To (UTC)</label>
 <input type="text" id="f-to" name="to" value="{{.Query.To}}">
-<label for="f-severity">Min severity</label>
-<input type="number" id="f-severity" name="severity" value="{{.Query.MinSeverity}}" min="1" max="24">
-<label for="f-term">Term</label>
-<input type="text" id="f-term" name="term" value="{{first .Query.Terms}}">
-<button type="submit" id="btn-search">Search</button>
+<label for="severity-select">Min severity</label>
+<select id="severity-select" name="severity">
+<option value="1"{{if eq .Query.MinSeverity 1}} selected{{end}}>TRACE</option>
+<option value="5"{{if eq .Query.MinSeverity 5}} selected{{end}}>DEBUG</option>
+<option value="9"{{if eq .Query.MinSeverity 9}} selected{{end}}>INFO</option>
+<option value="13"{{if eq .Query.MinSeverity 13}} selected{{end}}>WARN</option>
+<option value="17"{{if eq .Query.MinSeverity 17}} selected{{end}}>ERROR</option>
+<option value="21"{{if eq .Query.MinSeverity 21}} selected{{end}}>FATAL</option>
+</select>
+{{range $i, $t := .TermFields}}
+<div class="pair">
+<label for="msg-term-{{add $i 1}}">Term {{add $i 1}}</label>
+<input type="text" id="msg-term-{{add $i 1}}" name="term" value="{{$t}}" maxlength="128">
+<button type="submit" name="intent" value="remove_term:{{$i}}" id="btn-remove-term-{{add $i 1}}">Remove term</button>
+</div>
+{{end}}
+{{if lt (len .TermFields) 8}}
+<button type="submit" name="intent" value="add_term" id="btn-add-term">Add term</button>
+{{end}}
+<p>Predicates: {{len .Query.Predicates}} active</p>
+{{range $i, $p := .PredFields}}
+<div class="pair">
+<label for="pred-{{add $i 1}}">Attribute filter {{add $i 1}}</label>
+<input type="text" id="pred-{{add $i 1}}" name="path" value="{{$p.Path}}">
+<select name="op" aria-label="Operator {{add $i 1}}">
+<option value="eq"{{if eq $p.Op "eq"}} selected{{end}}>eq</option>
+<option value="missing"{{if eq $p.Op "missing"}} selected{{end}}>missing</option>
+</select>
+<select name="ptype" aria-label="Type {{add $i 1}}">
+<option value="string"{{if eq $p.Type "string"}} selected{{end}}>string</option>
+<option value="integer"{{if eq $p.Type "integer"}} selected{{end}}>integer</option>
+<option value="real"{{if eq $p.Type "real"}} selected{{end}}>real</option>
+<option value="boolean"{{if eq $p.Type "boolean"}} selected{{end}}>boolean</option>
+<option value="null"{{if eq $p.Type "null"}} selected{{end}}>null</option>
+</select>
+<input type="text" name="pval" value="{{$p.Value}}" aria-label="Value {{add $i 1}}">
+<button type="submit" name="intent" value="remove_pred:{{$i}}" id="btn-remove-pred-{{add $i 1}}">Remove predicate</button>
+</div>
+{{end}}
+{{if lt (len .PredFields) 8}}
+<button type="submit" name="intent" value="add_pred" id="btn-add-pred">Add attribute filter</button>
+{{end}}
+<div class="toolbar">
+<button type="submit" id="btn-search" name="intent" value="search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">Search</button>
+<button type="submit" id="btn-clear" name="intent" value="clear">Clear filters</button>
+</div>
+<label for="view-name">View name</label>
+<input type="text" id="view-name" name="view" maxlength="32" autocomplete="off">
+<button type="submit" id="btn-save-view" name="intent" value="save_view">Save view</button>
 </fieldset>
 </form>
-{{if .Detail}}
-<div id="results-region" aria-live="polite" tabindex="-1"></div>
-{{template "detail" .}}
-{{else}}
-{{template "results" .}}
-<div id="detail-region"></div>
+{{if .Saved}}
+<h2>Saved views</h2>
+<ul class="saved">
+{{range .Saved}}
+<li>
+<form method="POST" action="/investigate/search">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="view" value="{{.Name}}">
+<input type="hidden" name="generation" value="{{$.Generation}}">
+<input type="hidden" name="sequence" value="{{$.Sequence}}">
+<button type="submit" name="intent" value="open_view">Open {{.Name}}</button>
+<button type="submit" name="intent" value="delete_view">Delete</button>
+</form>
+</li>
 {{end}}
-<p id="status" aria-live="polite" tabindex="-1">{{.Status}}</p>
-</main>
-</body>
-</html>
+</ul>
+{{end}}
+{{end}}
+
+{{define "status"}}
+<p id="status" aria-live="polite" tabindex="-1" data-code="{{.Code}}">{{.Status}}</p>
 {{end}}

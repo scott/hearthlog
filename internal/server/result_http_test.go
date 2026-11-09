@@ -49,7 +49,7 @@ func TestResultHTTPBytes(t *testing.T) {
 			if !tc.overflow {
 				got := strings.Count(string(body), `data-ingest-id=`)
 				if tc.name == "rawoverflow" {
-					if got < 1 || got >= tc.count || !strings.Contains(string(body), `id="btn-next"`) {
+					if got < 1 || got >= tc.count || !strings.Contains(string(body), `id="btn-older"`) {
 						t.Fatalf("bounded page rows %d next=%t", got, strings.Contains(string(body), `id="btn-next"`))
 					}
 				} else if got != tc.count {

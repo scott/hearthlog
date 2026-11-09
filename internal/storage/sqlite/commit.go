@@ -112,6 +112,20 @@ func (s *Store) now() time.Time {
 	return fn()
 }
 
+// Now is the clock used for retention cutoffs and cursor expiry.
+func (s *Store) Now() time.Time {
+	return s.now()
+}
+
+// SetClock replaces the clock. A nil function restores time.Now.
+func (s *Store) SetClock(now func() time.Time) {
+	if now == nil {
+		s.clock.Store(func() time.Time { return time.Now() })
+		return
+	}
+	s.clock.Store(now)
+}
+
 // Watermark reads the persisted commit watermark. It is not an in-memory counter.
 func (s *Store) Watermark(ctx context.Context) (int64, error) {
 	var v string

@@ -259,7 +259,7 @@ func (s *Store) keysetFor(ctx context.Context, conn *sql.Conn, scope model.Scope
 // walks the workspace.
 func retentionExcludeSQL(nSources int) string {
 	var b strings.Builder
-	b.WriteString(`SELECT 1 FROM logs INDEXED BY idx_logs_retention WHERE received_at >= ? AND received_at < ? AND workspace_id = ? AND ingest_id <= ?`)
+	b.WriteString(`SELECT 1 FROM logs INDEXED BY ` + IndexLogsRetention + ` WHERE received_at >= ? AND received_at < ? AND workspace_id = ? AND ingest_id <= ?`)
 	if nSources > 0 {
 		b.WriteString(` AND source_id IN (`)
 		for i := 0; i < nSources; i++ {
@@ -372,6 +372,75 @@ func loadCursorMeta(ctx context.Context, conn *sql.Conn) (string, string, error)
 		return "", "", ErrStorage
 	}
 	return mac, epoch, nil
+}
+
+// FiltersFromCursor reads the filters bound into a signed cursor. Pagination
+// posts the cursor without repeating those filters, which keeps the form
+// under the 4KiB cap.
+func (s *Store) FiltersFromCursor(ctx context.Context, scope model.Scope, token string) (model.Query, error) {
+	var q model.Query
+	if scope.WorkspaceID == "" || token == "" {
+		return q, ErrCursorInvalid
+	}
+	err := s.withReader(ctx, func(ctx context.Context, conn *sql.Conn, budget *progressBudget) error {
+		macHex, _, err := loadCursorMeta(ctx, conn)
+		if err != nil {
+			return err
+		}
+		key, err := decodeMAC(macHex)
+		if err != nil {
+			return err
+		}
+		body, err := openCursor(key, token)
+		if err != nil {
+			return err
+		}
+		if body.WS != scope.WorkspaceID {
+			return ErrCursorScope
+		}
+		preds := make([]model.Predicate, len(body.Preds))
+		for i := range body.Preds {
+			preds[i] = body.Preds[i]
+			preds[i].Path = append([]string(nil), body.Preds[i].Path...)
+			if body.Preds[i].Value != nil {
+				preds[i].Value = append([]byte(nil), body.Preds[i].Value...)
+			}
+		}
+		q = model.Query{
+			Sources:     append([]string(nil), body.Sources...),
+			From:        body.From,
+			To:          body.To,
+			MinSeverity: body.Sev,
+			Terms:       append([]string(nil), body.Terms...),
+			Predicates:  preds,
+			Limit:       body.Limit,
+			Cursor:      token,
+		}
+		return nil
+	})
+	return q, err
+}
+
+// HasRetainedLogs reports whether the workspace has a row at or after the
+// live receipt cutoff. It is a LIMIT 1 probe, not a count.
+func (s *Store) HasRetainedLogs(ctx context.Context, workspace string) (bool, error) {
+	if workspace == "" {
+		return false, ErrStorage
+	}
+	var one int
+	err := s.withReader(ctx, func(ctx context.Context, conn *sql.Conn, budget *progressBudget) error {
+		err := conn.QueryRowContext(ctx, `SELECT 1 FROM logs INDEXED BY `+IndexLogsRetention+` WHERE received_at >= ? AND workspace_id = ? LIMIT 1`,
+			retentionCutoff(s.now()), workspace).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			one = 0
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return one == 1, nil
 }
 
 func scanWatermark(ctx context.Context, conn *sql.Conn) (int64, error) {

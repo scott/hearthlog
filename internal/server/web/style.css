@@ -35,3 +35,32 @@ main{padding:.5rem}
 fieldset{padding:.75rem}
 .detail-meta{grid-template-columns:minmax(0,1fr)}
 }
+.layout{display:flex;flex-direction:column;gap:1rem;min-width:0}
+#filters,.content,.pair,.toolbar,.saved{min-width:0}
+#filters input,#filters select,#filters textarea{width:100%}
+.pair{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.pair input,.pair select{flex:1 1 8rem}
+.toolbar{display:flex;flex-wrap:wrap;gap:.5rem}
+.toolbar button,.pair button{width:auto}
+select{font:inherit;padding:.4rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--fg);max-width:100%}
+.badge{display:inline-block;padding:.1rem .4rem;border:1px solid var(--border);border-radius:4px;font-size:.75rem}
+.attrs{list-style:none;padding:0;margin:0}
+.attr{display:flex;flex-wrap:wrap;gap:.35rem;align-items:baseline;margin:.25rem 0}
+.avalue,.message,.window,.key{overflow-wrap:anywhere}
+.saved{list-style:none;padding:0}
+.saved li{margin:.25rem 0}
+button:disabled{opacity:.5}
+.d0{margin-left:0}
+.d1{margin-left:.75rem}
+.d2{margin-left:1.5rem}
+.d3{margin-left:2.25rem}
+.d4{margin-left:3rem}
+.d5{margin-left:3.75rem}
+.d6{margin-left:4.5rem}
+.d7{margin-left:5.25rem}
+.d8{margin-left:6rem}
+@media(min-width:600px){
+.layout{flex-direction:row;align-items:flex-start}
+#filters{flex:1 1 16rem;max-width:22rem}
+.content{flex:2 1 18rem;min-width:0}
+}

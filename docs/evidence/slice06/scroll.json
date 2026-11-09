@@ -1,0 +1,172 @@
+[
+  {
+    "page": "ready",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "ready",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1124,
+    "overflow": false
+  },
+  {
+    "page": "ready",
+    "label": "360",
+    "width": 360,
+    "sw": 360,
+    "cw": 360,
+    "bw": 360,
+    "sh": 1124,
+    "overflow": false
+  },
+  {
+    "page": "results",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "results",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1711,
+    "overflow": false
+  },
+  {
+    "page": "results",
+    "label": "360",
+    "width": 360,
+    "sw": 360,
+    "cw": 360,
+    "bw": 360,
+    "sh": 1735,
+    "overflow": false
+  },
+  {
+    "page": "detail",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1358,
+    "overflow": false
+  },
+  {
+    "page": "detail",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 2575,
+    "overflow": false
+  },
+  {
+    "page": "detail",
+    "label": "360",
+    "width": 360,
+    "sw": 360,
+    "cw": 360,
+    "bw": 360,
+    "sh": 2627,
+    "overflow": false
+  },
+  {
+    "page": "too-broad",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "too-broad",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1146,
+    "overflow": false
+  },
+  {
+    "page": "cursor-expired",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "cursor-expired",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1124,
+    "overflow": false
+  },
+  {
+    "page": "timeout",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "timeout",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1146,
+    "overflow": false
+  },
+  {
+    "page": "row-expired",
+    "label": "desktop",
+    "width": 1280,
+    "sw": 1265,
+    "cw": 1265,
+    "bw": 1265,
+    "sh": 1112,
+    "overflow": false
+  },
+  {
+    "page": "row-expired",
+    "label": "390",
+    "width": 390,
+    "sw": 390,
+    "cw": 390,
+    "bw": 390,
+    "sh": 1146,
+    "overflow": false
+  }
+]

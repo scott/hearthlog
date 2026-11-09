@@ -1,31 +1,49 @@
-{{define "results"}}
-<div id="results-region" data-fragment-kind="results" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}">
-<h2 id="results-heading" tabindex="-1">Results</h2>
+{{define "results-body"}}
+<div id="results-region" data-fragment-kind="results" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}"{{if .Detail}} hidden inert{{end}}>
+{{if and (not .SuppressResults) (not .Detail)}}
+<h2 id="results-heading" tabindex="-1"{{if eq .Focus "results"}} autofocus{{end}}>Results</h2>
+{{if .Window}}<p class="window">{{.Window}}</p>{{end}}
 {{if .Rows}}
+<form id="detail-form" method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML">
+{{if .PageCursor}}{{template "cursor-only" .}}{{else}}{{template "frozen" .}}{{end}}
+</form>
 <ul class="results">
 {{range .Rows}}
 <li data-event-id="{{.EventID}}" data-ingest-id="{{.IngestID}}" data-severity="{{.SeverityNumber}}" data-time="{{.EventTime}}" data-source="{{.SourceID}}">
-<time datetime="{{.EventTime}}">{{.EventTime}}</time>
-<span class="source">{{.SourceID}}</span>
+<time datetime="{{.EventTime}}">{{formatUTC .EventTime "2006-01-02 15:04:05"}} UTC</time>
 <span class="severity">{{.SeverityText}}</span>
+<span class="source">{{srcLabel $.Sources .SourceID}}</span>
 <span class="message">{{.Message}}</span>
-<form method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML">
-{{template "context" $}}
-<input type="hidden" name="id" value="{{.IngestID}}">
-<button type="submit" id="event-{{.IngestID}}-open">Open details</button>
-</form>
+<button type="submit" form="detail-form" name="id" value="{{.IngestID}}" id="event-{{.IngestID}}-open">Open details</button>
 </li>
 {{end}}
 </ul>
+{{else if .NoEvents}}
+<p>No events in this window</p>
 {{else}}
-<p class="no-results">No matching events</p>
+<p>No matching events</p>
 {{end}}
 {{if .NextCursor}}
 <form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
-{{template "context" $}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="preset" value="{{.Preset}}">
 <input type="hidden" name="cursor" value="{{.NextCursor}}">
-<button type="submit" id="btn-next">Next page</button>
+<input type="hidden" name="generation" value="{{.Generation}}">
+<input type="hidden" name="sequence" value="{{.Sequence}}">
+<button type="submit" id="btn-older">Older</button>
+</form>
+{{end}}
+<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+{{template "context" .}}
+<button type="submit" id="btn-new-search" name="intent" value="search">New search</button>
 </form>
 {{end}}
 </div>
+{{end}}
+
+{{define "results"}}
+{{template "results-body" .}}
+<p id="status" hx-swap-oob="true" aria-live="polite" tabindex="-1" data-code="{{.Code}}">{{.Status}}</p>
+<input type="text" id="f-from" name="from" hx-swap-oob="true" value="{{.Query.From}}">
+<input type="text" id="f-to" name="to" hx-swap-oob="true" value="{{.Query.To}}">
 {{end}}

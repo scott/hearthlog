@@ -100,7 +100,17 @@ func (s *Store) ensureSearchSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(workspace_id, source_id, event_time DESC, ingest_id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_ws_time ON logs(workspace_id, event_time DESC, ingest_id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_ws_ingest ON logs(workspace_id, ingest_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_retention ON logs(received_at, ingest_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + IndexLogsRetention + ` ON logs(received_at, ingest_id)`,
+		`CREATE TABLE IF NOT EXISTS saved_views (
+			workspace_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			preset TEXT NOT NULL,
+			min_severity INTEGER NOT NULL,
+			sources TEXT NOT NULL,
+			terms TEXT NOT NULL,
+			predicates TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, name)
+		)`,
 		logsImmutableTrigger,
 		`INSERT OR IGNORE INTO metadata(key, value) VALUES('cursor_epoch', '1')`,
 	}
