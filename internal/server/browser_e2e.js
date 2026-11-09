@@ -40,6 +40,57 @@ function nextLine() {
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+function redact(s) {
+  return String(s)
+    .replace(/token=[^&\s"']+/gi, 'token=REDACTED')
+    .replace(/csrf=[^&\s"']+/gi, 'csrf=REDACTED')
+    .replace(/hl_session=[^;\s"']+/gi, 'hl_session=REDACTED');
+}
+
+function oneLine(s, n) {
+  return redact(s).replace(/\s+/g, ' ').slice(0, n || 500);
+}
+
+function headerValue(headers, name) {
+  if (!headers) return '';
+  const want = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === want) return headers[key];
+  }
+  return '';
+}
+
+const noJS = new Set();
+const lastNet = new Map();
+
+function noteNet(msg) {
+  const sid = msg.sessionId || '';
+  const p = msg.params || {};
+  if (msg.method === 'Network.requestWillBeSent') {
+    const url = (p.request && p.request.url) || '';
+    if (url.indexOf('/investigate') === -1 && url.indexOf('/login') === -1) return;
+    lastNet.set(sid, {
+      id: p.requestId,
+      method: p.request.method,
+      url: url,
+      post: p.request.postData || '',
+      status: '',
+      headers: {},
+      done: false
+    });
+    return;
+  }
+  const rec = lastNet.get(sid);
+  if (!rec || !p.requestId || rec.id !== p.requestId) return;
+  if (msg.method === 'Network.responseReceived') {
+    rec.status = p.response ? p.response.status : '';
+    rec.headers = (p.response && p.response.headers) || {};
+  } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
+    rec.done = true;
+    if (p.errorText) rec.error = p.errorText;
+  }
+}
+
 let listeners = [];
 function waitEvent(sessionId, method, ms) {
   return new Promise((resolve, reject) => {
@@ -150,6 +201,7 @@ async function newSession(send, opts) {
   await send('Log.enable', {}, session);
   await send('Network.enable', {}, session);
   if (opts && opts.disableJS) {
+    noJS.add(session);
     await send('Emulation.setScriptExecutionDisabled', { value: true }, session);
   }
   await metrics(send, session, 1280, 900, false);
@@ -191,11 +243,61 @@ async function waitFn(send, session, expression, ms) {
   }
   let debug = '';
   try {
-    debug = await ev(send, session, `JSON.stringify({path:location.pathname,term:(document.getElementById('msg-term-1')||{}).value,preset:(document.getElementById('time-select')||{}).value,from:(document.getElementById('f-from')||{}).value,status:(document.getElementById('status')||{}).textContent})`);
+    debug = await diag(send, session);
   } catch (e) {
     debug = String(e.message || e);
   }
-  throw new Error('timeout ' + expression + ' last=' + last + ' err=' + err + ' debug=' + debug);
+  throw new Error('timeout ' + expression + ' last=' + last + ' err=' + err + ' ' + debug);
+}
+
+async function diag(send, session) {
+  let page = '';
+  try {
+    page = await ev(send, session, `(() => {
+      const a = document.activeElement;
+      const gens = [...document.querySelectorAll('input[name=generation]')].map((el) => el.value);
+      const seqs = [...document.querySelectorAll('input[name=sequence]')].map((el) => el.value);
+      return JSON.stringify({
+        path: location.pathname,
+        term: (document.getElementById('msg-term-1') || {}).value || '',
+        preset: (document.getElementById('time-select') || {}).value || '',
+        from: (document.getElementById('f-from') || {}).value || '',
+        status: (document.getElementById('status') || {}).textContent || '',
+        generation: gens,
+        sequence: seqs,
+        activeHTML: a ? a.outerHTML : ''
+      });
+    })()`);
+  } catch (e) {
+    page = String(e.message || e);
+  }
+  const rec = lastNet.get(session) || {};
+  let body = '';
+  if (rec.id && rec.done) {
+    try {
+      const r = await send('Network.getResponseBody', { requestId: rec.id }, session);
+      body = r.base64Encoded ? '[base64]' : (r.body || '');
+    } catch (e) {
+      body = 'unavailable';
+    }
+  }
+  const req = {
+    method: rec.method || '',
+    url: rec.url || '',
+    status: rec.status || '',
+    error: rec.error || '',
+    post: oneLine(rec.post || '', 180),
+    notice: headerValue(rec.headers, 'x-notice'),
+    xGeneration: headerValue(rec.headers, 'x-generation'),
+    xSequence: headerValue(rec.headers, 'x-sequence'),
+    body: oneLine(body, 180)
+  };
+  return 'debug=' + oneLine(page, 700) + ' lastReq=' + oneLine(JSON.stringify(req), 900);
+}
+
+async function waitIdle(send, session) {
+  if (noJS.has(session)) return;
+  await waitFn(send, session, `document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling') ? '' : 'idle'`, 20000);
 }
 
 async function snap(send, session) {
@@ -207,6 +309,7 @@ async function snap(send, session) {
 }
 
 async function clickId(send, session, id) {
+  await waitIdle(send, session);
   const ok = await ev(send, session, `(() => { const el = document.getElementById(${JSON.stringify(id)}); if (!el) return false; el.click(); return true; })()`);
   if (!ok) throw new Error('missing #' + id);
 }
@@ -222,6 +325,7 @@ async function login(send, session) {
   await send('Page.navigate', { url: BASE + '/login' }, session);
   await waitFn(send, session, `document.querySelector('input[name=token]') ? 'yes' : ''`, 10000);
   await ev(send, session, `document.querySelector('input[name=token]').value = ${JSON.stringify(TOKEN)}`);
+  await waitIdle(send, session);
   await ev(send, session, `document.querySelector('button[type=submit]').click()`);
   await waitFn(send, session, `location.pathname === '/investigate' && document.getElementById('btn-search-implicit') ? 'yes' : ''`, 10000);
 }
@@ -251,6 +355,7 @@ async function domQuery(send, session, selector) {
 }
 
 async function domClick(send, session, selector) {
+  await waitIdle(send, session);
   const nodeId = await domQuery(send, session, selector);
   try { await send('DOM.scrollIntoViewIfNeeded', { nodeId }, session); } catch (e) {}
   const box = await send('DOM.getBoxModel', { nodeId }, session);
@@ -262,6 +367,7 @@ async function domClick(send, session, selector) {
 }
 
 async function pressEnter(send, session, selector) {
+  await waitIdle(send, session);
   const nodeId = await domQuery(send, session, selector);
   await send('DOM.focus', { nodeId }, session);
   await send('Input.dispatchKeyEvent', {
@@ -283,6 +389,7 @@ async function main() {
     await cdp.opened;
     const send = cdp.send;
     listeners.push((msg) => {
+      noteNet(msg);
       if (msg.method === 'Runtime.consoleAPICalled') {
         noteCSP((msg.params.args || []).map((a) => a.value || a.description || '').join(' '));
       } else if (msg.method === 'Runtime.exceptionThrown') {
@@ -326,9 +433,11 @@ async function main() {
     })()`);
 
     say('STEP save-open');
+    await waitIdle(send, session);
     await ev(send, session, `document.getElementById('view-name').value = 'morning'`);
     await clickId(send, session, 'btn-save-view');
     await waitFn(send, session, `document.getElementById('status') && document.getElementById('status').textContent.includes('View saved') ? 'yes' : ''`);
+    await waitIdle(send, session);
     const opened = await ev(send, session, `(() => { const b = [...document.querySelectorAll('button')].find((el) => el.textContent === 'Open morning'); if (!b) return false; b.click(); return true; })()`);
     if (!opened) throw new Error('Open morning missing');
     await waitFn(send, session, `(() => {
@@ -350,6 +459,7 @@ async function main() {
     say('STEP filter');
     await clickId(send, session, openId);
     await waitFn(send, session, `document.getElementById('detail-heading') ? 'yes' : ''`);
+    await waitIdle(send, session);
     const filtered = await ev(send, session, `(() => {
       const forms = [...document.querySelectorAll('form')];
       const f = forms.find((form) => [...form.querySelectorAll('input[name=path]')].some((el) => el.value === 'task.attempt'));
@@ -367,6 +477,7 @@ async function main() {
     })()`);
 
     say('STEP hostile');
+    await waitIdle(send, session);
     await ev(send, session, `(() => {
       document.getElementById('time-select').value = '15m';
       document.getElementById('severity-select').value = '1';
@@ -402,9 +513,10 @@ async function main() {
       if (!el || !el.isConnected) return '';
       const region = document.getElementById('results-region');
       if (!region || !region.textContent.includes('synthetic hostile')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      if (!document.activeElement || document.activeElement.id !== 'status') return '';
       return el.textContent === 'Query too broad. Narrow the time window, then run Search.' ? 'yes' : '';
     })()`, 20000);
-    await sleep(60);
     const broadFocus = await ev(send, session, `document.activeElement && document.activeElement.id`);
     if (broadFocus !== 'status') throw new Error('too-broad focus ' + broadFocus);
     await shot(send, session, 'notice-after-search-desktop.png');
@@ -413,6 +525,7 @@ async function main() {
     await metrics(send, session, 1280, 900, false);
 
     say('STEP gap0');
+    await waitIdle(send, session);
     const gapArmed = await ev(send, session, `(() => {
       document.body.addEventListener('htmx:afterSwap', function onSwap(ev) {
         const info = ev.detail && ev.detail.pathInfo;
@@ -432,12 +545,17 @@ async function main() {
       return 'armed';
     })()`);
     if (gapArmed !== 'armed') throw new Error('gap0 arm ' + gapArmed);
-    await waitFn(send, session, `document.getElementById('status') && document.getElementById('status').textContent === 'Query is invalid' ? 'yes' : ''`);
-    await sleep(60);
+    await waitFn(send, session, `(() => {
+      const el = document.getElementById('status');
+      if (!el || el.textContent !== 'Query is invalid') return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return document.activeElement && document.activeElement.id === 'status' ? 'yes' : '';
+    })()`);
     const gapFocus = await ev(send, session, `document.activeElement && document.activeElement.id`);
     if (gapFocus !== 'status') throw new Error('gap0 focus ' + gapFocus);
 
     say('STEP row-expired');
+    await waitIdle(send, session);
     await ev(send, session, `(() => {
       document.getElementById('time-select').value = 'custom';
       document.getElementById('f-from').value = ${JSON.stringify(AGING_FROM)};
@@ -455,12 +573,15 @@ async function main() {
     await waitFn(send, session, `(() => {
       const el = document.getElementById('status');
       if (!el || !el.isConnected) return '';
-      return el.textContent === 'Row expired. Rerun query. This row is past the retention window.' ? 'yes' : '';
+      if (el.textContent !== 'Row expired. Rerun query. This row is past the retention window.') return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return document.activeElement && document.activeElement.id === 'status' ? 'yes' : '';
     })()`);
     const rowFocus = await ev(send, session, `document.activeElement && document.activeElement.id`);
     if (rowFocus !== 'status') throw new Error('row-expired focus ' + rowFocus);
 
     say('STEP cursor-expired');
+    await waitIdle(send, session);
     await ev(send, session, `(() => {
       document.getElementById('time-select').value = '15m';
       document.getElementById('msg-term-1').value = 'filler';
@@ -521,6 +642,7 @@ async function main() {
     if (focused !== openMatch[1]) throw new Error('no-js focus ' + focused + ' wanted ' + openMatch[1]);
 
     say('STEP session-expired');
+    await waitIdle(send, session);
     const second = await fetch(BASE + '/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: BASE },

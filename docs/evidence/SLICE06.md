@@ -334,6 +334,8 @@ ok  	example.invalid/hearthlog/internal/server	16.612s
 
 The same test passed again inside the race run above. Screenshots used `E2E_SHOT_DIR=docs/evidence/slice06`.
 
+Each later click waits until no element has `htmx-request`, `htmx-swapping`, or `htmx-settling`. A `waitFn` timeout also records the last investigate request and response, `X-Notice`, the generation and sequence values, and `activeElement.outerHTML`. `go test -tags "fts5 sqlite_omit_load_extension" -run TestBrowserE2E -count=50 -v ./internal/server/` passed 50/50 (`ok example.invalid/hearthlog/internal/server 79.427s`). That log is not in the repo.
+
 ## NOTRUN
 
 - Full keyboard Tab and Escape order, and 320px at 200% zoom. Enter in a term field is the browser walk. 360px and 390px were measured at 1x, and the walk checks that 390px does not scroll sideways.
