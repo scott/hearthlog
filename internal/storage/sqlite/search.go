@@ -108,13 +108,15 @@ func (s *Store) ReadPage(ctx context.Context, scope model.Scope, q model.Query) 
 		if err != nil {
 			return err
 		}
+		// The retention EXISTS runs on this connection before the page. Re-arm
+		// so that check cannot consume the page budget, including no-term pages.
 		// Term queries try FTS-first. Each pass keeps the 100000-step cap.
 		// A tripped FTS pass is discarded and the time-index pass runs under
 		// a fresh cap, so a common token can still stop after LIMIT rows.
 		// The binary does not run ANALYZE; the join order is not left to the planner.
+		budget.arm(stepLimit(ctx))
 		order := orderTime
 		if len(q.Terms) > 0 {
-			budget.arm(stepLimit(ctx))
 			order = orderFTS
 		}
 		recs, more, lastT, lastID, err := readOrdered(ctx, conn, scope.WorkspaceID, q, ks, order)
@@ -252,31 +254,39 @@ func (s *Store) keysetFor(ctx context.Context, conn *sql.Conn, scope model.Scope
 	return keyset{horizon: body.Horizon, cutoff: body.Cutoff, hasLast: body.HasLast, lastT: body.LastT, lastID: body.LastID}, nil
 }
 
+// retentionExcludeSQL forces idx_logs_retention. Without stats, a plain
+// filter on workspace_id and ingest_id is planned as idx_logs_ws_ingest and
+// walks the workspace.
+func retentionExcludeSQL(nSources int) string {
+	var b strings.Builder
+	b.WriteString(`SELECT 1 FROM logs INDEXED BY idx_logs_retention WHERE received_at >= ? AND received_at < ? AND workspace_id = ? AND ingest_id <= ?`)
+	if nSources > 0 {
+		b.WriteString(` AND source_id IN (`)
+		for i := 0; i < nSources; i++ {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('?')
+		}
+		b.WriteByte(')')
+	}
+	b.WriteString(` LIMIT 1`)
+	return b.String()
+}
+
 // retentionExcludes reports whether any row still inside the cursor snapshot
-// would disappear under the cutoff at s.now(). The received_at range is the
-// leading predicate so idx_logs_retention can satisfy it.
+// would disappear under the cutoff at s.now().
 func (s *Store) retentionExcludes(ctx context.Context, conn *sql.Conn, workspace string, sources []string, horizon, frozen int64) (bool, error) {
 	current := retentionCutoff(s.now())
 	if current <= frozen {
 		return false, nil
 	}
-	var b strings.Builder
-	b.WriteString(`SELECT 1 FROM logs WHERE received_at >= ? AND received_at < ? AND workspace_id = ? AND ingest_id <= ?`)
 	args := []any{frozen, current, workspace, horizon}
-	if len(sources) > 0 {
-		b.WriteString(` AND source_id IN (`)
-		for i, src := range sources {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			b.WriteByte('?')
-			args = append(args, src)
-		}
-		b.WriteByte(')')
+	for _, src := range sources {
+		args = append(args, src)
 	}
-	b.WriteString(` LIMIT 1`)
 	var one int
-	err := conn.QueryRowContext(ctx, b.String(), args...).Scan(&one)
+	err := conn.QueryRowContext(ctx, retentionExcludeSQL(len(sources)), args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
