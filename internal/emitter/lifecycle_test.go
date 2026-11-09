@@ -25,10 +25,13 @@ func TestLifecycleFlushClose(t *testing.T) {
 	)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqCount.Add(1)
-		if reqCount.Load() == 1 {
+		if reqCount.Add(1) == 1 {
 			close(entered)
-			<-release
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		var b model.Batch
@@ -51,7 +54,7 @@ func TestLifecycleFlushClose(t *testing.T) {
 		srv.Close()
 	}()
 
-	h, err := New(srv.URL+"/api/experimental/skeleton/batches", "tok", nil)
+	h, err := NewWithConfig(Config{Endpoint: srv.URL + "/api/experimental/skeleton/batches", Token: "tok", QueueEvents: 128})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -72,36 +75,48 @@ func TestLifecycleFlushClose(t *testing.T) {
 		t.Fatalf("Flush: want DeadlineExceeded, got %v", err)
 	}
 
-	// 2. Fill queue to capacity (128) + 1 to trigger drop
-	for i := 0; i < 129; i++ {
+	// 2. Fill queue to capacity (128) + 2 in flight + 1 to trigger drop-newest
+	for i := 0; i < 131; i++ {
 		_ = h.Handle(context.Background(), slogRecord(fmt.Sprintf("fill-%d", i)))
 	}
-	h.state.mu.Lock()
-	pending := h.state.pending
-	qlen := len(h.state.queue)
-	h.state.mu.Unlock()
-	if pending > 129 {
-		t.Fatalf("pending %d > 129", pending)
+	st := h.Stats()
+	if st.QueuedEvents > 128 {
+		t.Fatalf("queue len %d > 128", st.QueuedEvents)
 	}
-	if qlen > 128 {
-		t.Fatalf("queue len %d > 128", qlen)
+	if st.InFlightBatches > MaxInFlight {
+		t.Fatalf("in flight %d > %d", st.InFlightBatches, MaxInFlight)
 	}
-	if h.state.drops.Load() == 0 {
-		t.Fatal("expected drops > 0")
+	if st.Dropped["queue_full"]["INFO"] == 0 {
+		t.Fatalf("expected queue_full drops, got %v", st.Dropped)
 	}
 
-	// 3. Close while still blocked
+	// 3. Close while still blocked: deadline expires, in-flight work is
+	// canceled and every abandoned event is counted as shutdown_unsent.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel2()
-	if err := h.Close(ctx2); !errors.Is(err, context.DeadlineExceeded) {
+	err = h.Close(ctx2)
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Close: want DeadlineExceeded, got %v", err)
 	}
+	var de *DeliveryError
+	if !errors.As(err, &de) || de.Unsent == 0 {
+		t.Fatalf("Close: want DeliveryError with unsent count, got %v", err)
+	}
+	st = h.Stats()
+	if st.Handled != st.AckedEvents+st.TotalDropped()+uint64(st.QueuedEvents+st.InFlightEvents) {
+		t.Fatalf("accounting mismatch: %+v", st)
+	}
+	if st.QueuedEvents != 0 || st.InFlightBatches != 0 || int(st.ShutdownUnsent) != de.Unsent {
+		t.Fatalf("after Close: %+v unsent=%d", st, de.Unsent)
+	}
 
-	// 4. Release and close with bounded timeout
+	// 4. Idempotent: a later Close returns the same result.
 	releaseOnce.Do(func() { close(release) })
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel3()
-	_ = h.Close(ctx3)
+	if err2 := h.Close(ctx3); err2 != err {
+		t.Fatalf("second Close = %v, want identical %v", err2, err)
+	}
 
 	select {
 	case <-h.state.done:
@@ -147,7 +162,7 @@ func TestConcurrentHandleCloseNoPanic(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			if h.state.drops.Load() == 0 {
+			if h.Stats().TotalDropped() == 0 {
 				t.Fatalf("Close: unexpected error with no drops: %v", err)
 			}
 		}

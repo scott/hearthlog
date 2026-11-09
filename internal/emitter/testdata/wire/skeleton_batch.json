@@ -1,0 +1,35 @@
+{
+  "version": 0,
+  "batch_id": "<UUID_A>",
+  "events": [
+    {
+      "event_id": "<UUID_B>",
+      "event_time": "<EVENT_TIME>",
+      "severity_number": 9,
+      "severity_text": "INFO",
+      "message": "synthetic job [REDACTED] finished",
+      "attributes": {
+        "component": "demo-api",
+        "job": {
+          "attempt": 2,
+          "big": 9007199254740993,
+          "ctx": {
+            "echo": "[REDACTED]",
+            "region_label": "staging"
+          },
+          "nothing": null,
+          "ok": true,
+          "ratio": 0.5,
+          "took": 1500000000,
+          "valuer": {
+            "nested": {
+              "ok": "visible"
+            },
+            "note": "has [REDACTED] here",
+            "user": "demo-user"
+          }
+        }
+      }
+    }
+  ]
+}

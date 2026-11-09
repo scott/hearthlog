@@ -131,11 +131,11 @@ func TestSnapshotRejectsUnsupportedAttr(t *testing.T) {
 		t.Fatalf("snapshot err = %v, want ErrRedactValue", err)
 	}
 
-	before := h.state.drops.Load()
+	before := h.Stats().TotalDropped()
 	if err := h.Handle(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.state.drops.Load(); got != before+1 {
+	if got := h.Stats().TotalDropped(); got != before+1 {
 		t.Fatalf("drops = %d, want %d", got, before+1)
 	}
 }

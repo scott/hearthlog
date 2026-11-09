@@ -18,12 +18,15 @@ var (
 )
 
 const (
-	maxRedactDepth   = 8
-	maxRedactMembers = 128
+	maxRedactDepth   = MaxNesting
+	maxRedactMembers = MaxAttributes
 	maxKeyBytes      = 128
 	maxStringBytes   = 8192
+	maxResolveSteps  = 32
 )
 
+// Keys containing these fragments (case-insensitive) are removed at every
+// level before enqueue. Bodies, headers and arbitrary objects are default-deny.
 var dropKeys = []string{"password", "secret", "token", "authorization", "cookie", "header", "body", "credential"}
 
 func shouldDropKey(key string) bool {
@@ -60,23 +63,39 @@ func truncateUTF8(s string, max int) string {
 	return s
 }
 
-func sanitizeValue(v slog.Value, secrets []string, depth int) (any, error) {
-	if depth > maxRedactDepth {
-		return nil, ErrRedactDepth
+// resolve evaluates LogValuers synchronously with a step bound. Unlike
+// slog.Value.Resolve, a panicking LogValue fails closed instead of producing a
+// stack-trace string that could leak internals onto the wire.
+func resolve(v slog.Value) (out slog.Value, err error) {
+	defer func() {
+		if recover() != nil {
+			out, err = slog.Value{}, ErrRedactValue
+		}
+	}()
+	for i := 0; i < maxResolveSteps; i++ {
+		if v.Kind() != slog.KindLogValuer {
+			return v, nil
+		}
+		v = v.LogValuer().LogValue()
 	}
+	return slog.Value{}, ErrRedactValue
+}
 
-	v = v.Resolve()
-
-	if v.Kind() == slog.KindAny {
+// scalar converts a resolved non-group value into an owned JSON value.
+// Arbitrary objects (KindAny other than nil) are rejected: fail closed.
+func scalar(v slog.Value, secrets []string) (any, error) {
+	switch v.Kind() {
+	case slog.KindAny:
 		if v.Any() == nil {
 			return nil, nil
 		}
 		return nil, ErrRedactValue
-	}
-
-	switch v.Kind() {
 	case slog.KindString:
-		return scrubString(v.String(), secrets), nil
+		s := v.String()
+		if !utf8.ValidString(s) {
+			s = strings.ToValidUTF8(s, "\uFFFD")
+		}
+		return scrubString(s, secrets), nil
 	case slog.KindBool:
 		return v.Bool(), nil
 	case slog.KindInt64:
@@ -101,64 +120,7 @@ func sanitizeValue(v slog.Value, secrets []string, depth int) (any, error) {
 		return v.Time().UTC().Format("2006-01-02T15:04:05.000000Z"), nil
 	case slog.KindDuration:
 		return int64(v.Duration()), nil
-	case slog.KindGroup:
-		return sanitizeGroup(v, secrets, depth)
 	default:
 		return nil, ErrRedactValue
 	}
-}
-
-func sanitizeGroup(v slog.Value, secrets []string, depth int) (map[string]any, error) {
-	result := make(map[string]any)
-	attrs := v.Group()
-	for _, a := range attrs {
-		if len(result) >= maxRedactMembers {
-			return nil, ErrRedactMembers
-		}
-		key := a.Key
-		if !utf8.ValidString(key) || len(key) > maxKeyBytes {
-			return nil, ErrRedactKey
-		}
-		if shouldDropKey(key) {
-			continue
-		}
-		for _, sec := range secrets {
-			if sec != "" && strings.Contains(key, sec) {
-				return nil, ErrRedactKey
-			}
-		}
-		sanitized, err := sanitizeValue(a.Value, secrets, depth+1)
-		if err != nil {
-			return nil, err
-		}
-		result[key] = sanitized
-	}
-	return result, nil
-}
-
-func SanitizeAttrs(attrs []slog.Attr, secrets []string) (map[string]any, error) {
-	result := make(map[string]any, len(attrs))
-	for _, a := range attrs {
-		if len(result) >= maxRedactMembers {
-			return nil, ErrRedactMembers
-		}
-		key := a.Key
-		if !utf8.ValidString(key) || len(key) > maxKeyBytes {
-			return nil, ErrRedactKey
-		}
-		if shouldDropKey(key) {
-			continue
-		}
-		for _, sec := range secrets {
-			if sec != "" && strings.Contains(key, sec) {
-				return nil, ErrRedactKey
-			}
-		}
-		sanitized, err := sanitizeValue(a.Value, secrets, 1)
-		if err != nil {
-			return nil, err
-		}
-		result[key] = sanitized
-	}
-	return result, nil
 }
