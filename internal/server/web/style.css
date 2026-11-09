@@ -10,8 +10,9 @@ legend{font-weight:600;padding:0 .5rem}
 label{display:block;margin:.5rem 0 .25rem;font-size:.9rem}
 input,button{font:inherit;padding:.4rem .6rem;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--fg);max-width:100%;min-width:0}
 input[readonly]{opacity:.6}
-button{cursor:pointer;background:var(--accent);color:#fff;border:none}
-button:hover{opacity:.9}
+button{cursor:pointer;background:#1565c0;color:#fff;border:none}
+button:hover{background:#0d47a1}
+.implicit-search{position:absolute;width:1px;height:1px;padding:0;margin:0;border:0;clip-path:inset(50%);white-space:nowrap;min-width:0}
 button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .results{list-style:none;padding:0;margin:1rem 0}
 .results li{padding:.75rem;border:1px solid var(--border);border-radius:4px;margin-bottom:.5rem;background:var(--card)}
@@ -49,7 +50,7 @@ select{font:inherit;padding:.4rem .6rem;border:1px solid var(--border);border-ra
 .avalue,.message,.window,.key{overflow-wrap:anywhere}
 .saved{list-style:none;padding:0}
 .saved li{margin:.25rem 0}
-button:disabled{opacity:.5}
+button:disabled{background:#d7deea;color:#1a1a2e}
 .d0{margin-left:0}
 .d1{margin-left:.75rem}
 .d2{margin-left:1.5rem}

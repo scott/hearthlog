@@ -2,8 +2,6 @@
 "use strict";
 var doc=document;
 var main=doc.getElementById("investigation");
-var results=doc.getElementById("results-region");
-var status=doc.getElementById("status");
 var genInput=doc.querySelector('input[name="generation"]');
 var seqInput=doc.querySelector('input[name="sequence"]');
 var gen=1;
@@ -25,6 +23,15 @@ var guidance={
 "504":"Query timed out. Narrow the time window, then run Search.",
 "503":"Service busy. Wait, then run Search again."
 };
+var notices={
+"invalid_query":"Query is invalid",
+"unsupported_path":"Attribute path not supported",
+"row_expired":"Row expired. Rerun query. This row is past the retention window.",
+"not_found":"Event not found"
+};
+
+function statusEl(){return doc.getElementById("status");}
+function resultsEl(){return doc.getElementById("results-region");}
 
 function clearNamed(form,name){
 var one=form.querySelector('input[name="'+name+'"]');
@@ -37,10 +44,12 @@ for(var i=0;i<all.length;i++)all[i].value="";
 }
 
 function clearProtected(){
-if(results)results.innerHTML="";
+var region=resultsEl();
+if(region)region.innerHTML="";
 var d=doc.getElementById("detail-region");
 if(d)d.innerHTML="";
-if(status)status.textContent="";
+var st=statusEl();
+if(st)st.textContent="";
 var f=main?main.querySelector("form"):null;
 if(f){
 clearNamed(f,"csrf");
@@ -65,18 +74,28 @@ btns[i].removeAttribute("aria-busy");
 }
 
 function showGuide(code){
-if(!authed||!status)return;
-status.textContent=guidance[code];
+var st=statusEl();
+if(!authed||!st)return;
+st.textContent=guidance[code];
+var region=resultsEl();
 if(code==="410"){
 var cursors=doc.querySelectorAll('input[name="cursor"]');
 for(var i=0;i<cursors.length;i++)cursors[i].value="";
-if(results)results.textContent="";
+if(region)region.textContent="";
 }
-if((code==="504"||code==="422"||code==="503")&&results){
-results.setAttribute("data-stale","true");
+if((code==="504"||code==="422"||code==="503")&&region){
+region.setAttribute("data-stale","true");
 }
 enableButtons();
-status.focus();
+st.focus();
+}
+
+function showNotice(text){
+var st=statusEl();
+if(!authed||!st)return;
+st.textContent=text;
+enableButtons();
+st.focus();
 }
 
 function onAuthFail(){
@@ -85,13 +104,14 @@ authed=false;
 if(pendingAbort)try{pendingAbort.abort();}catch(e){}
 pendingAbort=null;
 clearProtected();
-if(status){
-status.textContent="Session expired. ";
+var st=statusEl();
+if(st){
+st.textContent="Session expired. ";
 var a=doc.createElement("a");
 a.href="/login";
 a.textContent="Sign in";
-status.appendChild(a);
-status.focus();
+st.appendChild(a);
+st.focus();
 }
 }
 
@@ -101,7 +121,8 @@ var xhr=e&&e.detail&&e.detail.xhr;
 var meta=xhr?reqMeta.get(xhr):null;
 if(!meta||meta.gen!==gen||meta.seq!==seq){return;}
 if(pendingAbort===xhr){try{pendingAbort.abort();}catch(err){}pendingAbort=null;}
-if(status){status.textContent="Request failed. Retry manually.";status.focus();}
+var st=statusEl();
+if(st){st.textContent="Request failed. Retry manually.";st.focus();}
 var btns=doc.querySelectorAll("button[type=submit]");
 for(var i=0;i<btns.length;i++){
 btns[i].disabled=false;
@@ -122,11 +143,13 @@ var kind="results";
 var sel="";
 var origin="";
 var path=d.requestConfig.path||"";
-if(path.indexOf("/search")!==-1&&status&&authed){
-status.textContent="Searching...";
+var st=statusEl();
+if(path.indexOf("/search")!==-1&&st&&authed){
+st.textContent="Searching...";
 }
-if(results&&path.indexOf("/search")!==-1){
-results.setAttribute("data-stale","true");
+var region=resultsEl();
+if(region&&path.indexOf("/search")!==-1){
+region.setAttribute("data-stale","true");
 }
 if(path.indexOf("/detail")!==-1){
 kind="detail";
@@ -168,15 +191,15 @@ htmx.on("htmx:afterSwap",function(e){
 pendingAbort=null;
 var d=e.detail;
 var fk=d.xhr.getResponseHeader("X-Fragment-Kind");
-results=doc.getElementById("results-region");
+var region=resultsEl();
 var dr=doc.getElementById("detail-region");
 if(fk==="detail"){
-if(results){results.hidden=true;results.setAttribute("inert","");}
+if(region){region.hidden=true;region.setAttribute("inert","");}
 var h=doc.getElementById("detail-heading");
 if(h)h.focus();
 }else{
 if(dr)dr.innerHTML="";
-if(results){results.hidden=false;results.removeAttribute("inert");}
+if(region){region.hidden=false;region.removeAttribute("inert");}
 var origin=d.xhr.getResponseHeader("X-Origin");
 var btn=null;
 if(origin){
@@ -192,15 +215,17 @@ if(rh)rh.focus();
 
 htmx.on("htmx:afterRequest",function(e){
 var d=e.detail;
-if(d.xhr.status===401||d.xhr.status===403){onAuthFail();return;}
-if(guidance[String(d.xhr.status)]){
 var xhr=d.xhr;
-var meta=xhr?reqMeta.get(xhr):null;
+if(xhr.status===401||xhr.status===403){onAuthFail();return;}
+if(xhr.status<400)return;
+var meta=reqMeta.get(xhr);
 if(!meta||meta.gen!==gen||meta.seq!==seq)return;
-showGuide(String(d.xhr.status));
-return;
-}
-if(d.xhr.status>=400){onErr(e);return;}
+var code=String(xhr.status);
+if(guidance[code]){showGuide(code);return;}
+var notice="";
+try{notice=xhr.getResponseHeader("X-Notice")||"";}catch(err){notice="";}
+if(notices[notice]){showNotice(notices[notice]);return;}
+onErr(e);
 });
 
 htmx.on("htmx:sendError",function(e){onErr(e);});
@@ -247,18 +272,22 @@ window.location.reload();
 });
 
 doc.addEventListener("submit",function(e){
-var f=e.target;
-if(f&&f.tagName==="FORM"){
-var btn=f.querySelector("button[type=submit]");
-if(btn){btn.disabled=true;btn.setAttribute("aria-busy","true");}
-}
+var btn=e.submitter;
+if(!btn||btn.tagName!=="BUTTON")return;
+setTimeout(function(){
+if(!btn.isConnected)return;
+btn.disabled=true;
+btn.setAttribute("aria-busy","true");
+},0);
 },true);
 
 doc.addEventListener("reset",function(e){
 var f=e.target;
-if(f&&f.tagName==="FORM"){
-var btn=f.querySelector("button[type=submit]");
-if(btn){btn.disabled=false;btn.removeAttribute("aria-busy");}
+if(!f||f.tagName!=="FORM"||!f.querySelectorAll)return;
+var btns=f.querySelectorAll("button[type=submit]");
+for(var i=0;i<btns.length;i++){
+btns[i].disabled=false;
+btns[i].removeAttribute("aria-busy");
 }
 });
 

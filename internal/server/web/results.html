@@ -1,7 +1,7 @@
 {{define "results-body"}}
 <div id="results-region" data-fragment-kind="results" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}"{{if .Detail}} hidden inert{{end}}>
 {{if and (not .SuppressResults) (not .Detail)}}
-<h2 id="results-heading" tabindex="-1"{{if eq .Focus "results"}} autofocus{{end}}>Results</h2>
+<h2 id="results-heading" tabindex="-1"{{if and (eq .Focus "results") (eq .OriginID "")}} autofocus{{end}}>Results</h2>
 {{if .Window}}<p class="window">{{.Window}}</p>{{end}}
 {{if .Rows}}
 <form id="detail-form" method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML">
@@ -14,7 +14,7 @@
 <span class="severity">{{.SeverityText}}</span>
 <span class="source">{{srcLabel $.Sources .SourceID}}</span>
 <span class="message">{{.Message}}</span>
-<button type="submit" form="detail-form" name="id" value="{{.IngestID}}" id="event-{{.IngestID}}-open">Open details</button>
+<button type="submit" form="detail-form" name="id" value="{{.IngestID}}" id="event-{{.IngestID}}-open"{{if and (eq $.Focus "results") (eq $.OriginID .IngestID)}} autofocus{{end}}>Open details</button>
 </li>
 {{end}}
 </ul>

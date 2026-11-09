@@ -9,7 +9,7 @@ Live polling is not this slice. `user_version` stays 1.
 | Item | Value |
 |---|---|
 | Target | linux/amd64, CGO_ENABLED=1, build tags `fts5 sqlite_omit_load_extension` |
-| Toolchain | go1.27.3 (GOTOOLCHAIN=local), gcc 13.3.0, node v22.23.4 |
+| Toolchain | go1.27.3 (GOTOOLCHAIN=local), gcc 13.3.0, node v22.23.4, Chrome 156.0.8078.47 |
 | Hardware class | generic x86_64 virtual machine |
 | SQLite | 3.54.1, unchanged from the Slice 05 readback |
 
@@ -23,24 +23,26 @@ CGO_ENABLED=1 go vet -tags "fts5 sqlite_omit_load_extension" ./...
 node --test internal/server/web/app.test.js
 ```
 
-Node: 5 pass, 0 fail. The fifth test is `422, 410, and 504 tell the user what to do`.
+Node: 7 pass, 0 fail. Added `status notices hit the live node` and
+`submit disables the submitter after the turn`. The earlier node tests are unchanged.
 `go mod verify` reported all modules verified. `gofmt -l` was empty. `go vet`
 was clean.
 
 Race package results (0 failures):
 
 ```text
-ok  example.invalid/hearthlog/cmd/hearthlog             1.012s
-ok  example.invalid/hearthlog/examples/slogservice      1.024s
-ok  example.invalid/hearthlog/internal/model            1.044s
-ok  example.invalid/hearthlog/internal/server           8.976s
-ok  example.invalid/hearthlog/internal/storage/sqlite  14.326s
-ok  example.invalid/hearthlog/internal/emitter         22.046s
+ok  example.invalid/hearthlog/cmd/hearthlog             1.015s
+ok  example.invalid/hearthlog/examples/slogservice      1.026s
+ok  example.invalid/hearthlog/internal/model            1.049s
+ok  example.invalid/hearthlog/internal/server          12.561s
+ok  example.invalid/hearthlog/internal/storage/sqlite  14.515s
+ok  example.invalid/hearthlog/internal/emitter         21.835s
 ```
 
-Same command with `-json`: 124 top-level tests, 330 including subtests,
-0 failures (cmd 1, examples 4, emitter 38/108, model 11/76, server 37/80,
-sqlite 33/61). Node: 5 pass, 0 fail.
+Same command with `-json`: 126 top-level tests, 332 including subtests,
+0 failures (cmd 1, examples 4, emitter 38/108, model 11/76, server 39/82,
+sqlite 33/61). Node: 7 pass, 0 fail. The server package includes
+`TestBrowserE2E`.
 
 gitleaks v8.30.1 is not on PATH here. The leak scan is the CI step inside
 the `test` job. The pull request records that run id for the head SHA.
@@ -50,7 +52,7 @@ the `test` job. The pull request records that run id for the head SHA.
 | Acceptance | Proof |
 |---|---|
 | Semantic full pages plus htmx filter, result, and detail partials for source, time, severity, message terms, typed attribute chips, and saved views | `internal/server/web/page.html`, `results.html`, `detail.html`, `context.html`. `TestFragments` checks one results region and one detail region, fragment headers, and frozen from/to. `TestAddTermControl`, `TestTermsPredicatesAndHostileDetail`, `TestSavedViewReevaluatesRelativeWindow`. |
-| Search, detail, and pagination work as normal form posts. Stale htmx responses are generation-rejected. Errors keep inputs. Focus survives a detail close in the client | `TestFormSessionGuards`, `TestSearchFullPage`, `TestFormCapKeepsCursorAndFiltersApart` (Older posts the cursor only). `app.test.js` `non-auth focus: current/stale/unknown` and the generation/sequence checks in `app.js configRequest and beforeRequest`. |
+| Search, detail, and pagination work as normal form posts. Stale htmx responses are generation-rejected. Errors keep inputs. Focus survives a detail close | `TestFormSessionGuards`, `TestSearchFullPage`, `TestFormCapKeepsCursorAndFiltersApart` (Older posts the cursor only). `app.test.js` `non-auth focus: current/stale/unknown` and the generation/sequence checks in `app.js configRequest and beforeRequest`. `TestBrowserE2E` steps `back-focus` and `no-js`. |
 | Event data is escaped. No trusted HTML/JS/URL cast. Fixed targets. Pinned self-hosted htmx. `allowEval=false`, `allowScriptTags=false`, `selfRequestsOnly=true`. Strict CSP | `TestTermsPredicatesAndHostileDetail` (hostile `hx-get` markup is escaped). `app.test.js` `htmx pin` SHA-256 `d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717`. CSP and htmx-config meta are in `routes.go` and `page.html`. `TestAccessibilityContract` rejects inline handlers. |
 | History snapshots and HTML caching stay off. A full navigation is a full page. `Vary: HX-Request` and `no-store`. Raw queries are not access-log fields | `page.html` sets `hx-history=false`, `historyCacheSize=0`, `historyRestoreAsHxRequest=false`. `ServeHTTP` sets `Vary` and `no-store`. `cmd/hearthlog/main.go` does not log request URIs. Non-HX search renders the `page` template (`TestSearchFullPage`). |
 | UX states, labels, text severity, narrow layout, session CSRF, and origin checks | `TestUIGuidanceStates`, `TestQueryTooBroadCopy`, `TestRowExpiredVersusMissing`, `TestAccessibilityContract`, `TestNarrowLayoutCSSContract`, `TestFormSessionGuards`. Scroll check below. |
@@ -82,6 +84,7 @@ page, capped at 2400px where the detail page is taller.
 | Results expired | [cursor-expired-desktop.png](slice06/cursor-expired-desktop.png) | [cursor-expired-390.png](slice06/cursor-expired-390.png) |
 | Query timed out | [timeout-desktop.png](slice06/timeout-desktop.png) | [timeout-390.png](slice06/timeout-390.png) |
 | Row expired | [row-expired-desktop.png](slice06/row-expired-desktop.png) | [row-expired-390.png](slice06/row-expired-390.png) |
+| Too broad after a successful search | [notice-after-search-desktop.png](slice06/notice-after-search-desktop.png) | [notice-after-search-390.png](slice06/notice-after-search-390.png) |
 
 ## Judgment calls
 
@@ -93,13 +96,58 @@ page, capped at 2400px where the detail page is taller.
 - Detail of a row past the live cutoff is HTTP 404 with `data-code="row_expired"`. Cursor expiry stays HTTP 410. The 410 page puts the cursor's filters back into the form and clears the cursor.
 - `IndexLogsRetention` is the only name used for `idx_logs_retention` in code. Slice 05 evidence still quotes the literal, because that file records the earlier run.
 
+## Follow-up for the client hold
+
+| Item | Proof |
+|---|---|
+| B1. Notices write to the `#status` that is in the document after a results or detail swap. 400 and 404 use the server copy for `invalid_query`, `unsupported_path`, `row_expired`, and `not_found`. The response body is not inserted | `app.js` looks up `#status` when it writes. `fail` sets `X-Notice`. Node test `status notices hit the live node` replaces the node, then checks 422, 410, 504, 503, 400, 404 `row_expired`, 404 `not_found`, a stale 400, a network error, and 401. `TestClientContracts` checks the `X-Notice` header for `invalid_query` and `row_expired`. `TestBrowserE2E` steps `too-broad`, `row-expired`, `cursor-expired`, and `session-expired` run after a successful search |
+| B2. The clicked submit button keeps its `intent` | The submit listener uses `e.submitter` and disables it on the next turn. Node test `submit disables the submitter after the turn`. Browser steps `remove-term` (alpha/beta becomes beta) and `save-open` (Open morning returns the checkout row, not "Query is invalid") |
+| B3. Enter in the filters runs Search | `#btn-search-implicit` is the first submit button, `tabindex="-1"`, `intent=search`, same `hx-post` target as the visible Search. `TestClientContracts` checks that order. Browser step `enter-search` keeps the term and stays on the same document. Step `no-js` is a full page and still keeps the term |
+| B4. Back to results focuses the Open details button that opened the detail | The results heading is autofocused only when `OriginID` is empty. The matching `event-N-open` button is autofocused when the origin is on the page. `TestClientContracts` checks both HTML shapes. Browser steps `back-focus` and `no-js` check `document.activeElement` |
+| B5. Headless browser walk | `TestBrowserE2E` drives Chrome over the real server. CI installs Chrome before `go test`, so the race run includes it. A missing Chrome binary fails the test |
+
+Button text is white on `#1565c0` (5.75:1). Hover is white on `#0d47a1` (8.63:1). Disabled is `#1a1a2e` on `#d7deea` (12.61:1), with no opacity. Links stay `--accent` `#4a9eff` on `#1a1a2e` (6.19:1). `TestClientContracts` locks those declarations. The htmx config sets `attributesToSettle` to `["class"]`. The browser walk fails if Chrome logs a CSP refusal.
+
+The new shots are the too-broad notice after a successful search, with the earlier hostile row still on the page at 390px. Names are `demo-api`, `commonwide`, and `synthetic hostile`. No real host, token, or log text.
+
+```bash
+CGO_ENABLED=1 go test -count=1 -tags "fts5 sqlite_omit_load_extension" -run TestBrowserE2E -timeout 180s -v ./internal/server/
+```
+
+```text
+=== RUN   TestBrowserE2E
+    browser_e2e_test.go:261: STEP login
+    browser_e2e_test.go:261: STEP narrow
+    browser_e2e_test.go:261: STEP remove-term
+    browser_e2e_test.go:261: STEP enter-search
+    browser_e2e_test.go:261: STEP save-open
+    browser_e2e_test.go:261: STEP back-focus
+    browser_e2e_test.go:261: STEP filter
+    browser_e2e_test.go:261: STEP hostile
+    browser_e2e_test.go:261: STEP too-broad
+    browser_e2e_test.go:261: STEP row-expired
+    browser_e2e_test.go:261: NEED_CLOCK row
+    browser_e2e_test.go:261: STEP cursor-expired
+    browser_e2e_test.go:261: NEED_CLOCK cursor
+    browser_e2e_test.go:261: NEED_CLOCK reset
+    browser_e2e_test.go:261: STEP no-js
+    browser_e2e_test.go:261: STEP session-expired
+    browser_e2e_test.go:261: PASS
+--- PASS: TestBrowserE2E (1.84s)
+PASS
+ok  	example.invalid/hearthlog/internal/server	1.847s
+```
+
+The same test passed again inside the race run above. Screenshots used `E2E_SHOT_DIR=docs/evidence/slice06`.
+
 ## NOTRUN
 
-- Interactive browser click-through: keyboard Tab/Enter/Escape order, htmx swap after a real click, and focus return in a live browser. Client focus and stale-response behavior are the node tests. Form posts are the Go HTTP tests. Chrome was used to render and measure, not to click through the product.
-- C5 at 320px and 200% zoom. 360px and 390px were measured at 1x device scale, with no sideways scroll.
+- Full keyboard Tab and Escape order, and 320px at 200% zoom. Enter in a term field is the browser walk. 360px and 390px were measured at 1x, and the walk checks that 390px does not scroll sideways.
+- A live 504 from Chrome. The client path is the node test that replaces `#status` and fires `htmx:timeout`. The server copy is `TestUIGuidanceStates`.
+- Notice placement and color. That polish is left for later.
 - C8 Live polling, catch-up, and reconnect. That is Slice 07.
 - 30-minute profile, power loss, and count-all.
 - OIDC and source lifecycle. Slice 08.
 - Slice 09 index on `(workspace_id, received_at, ingest_id)`, and a fresh confirmation of single-session login. The existing second-login invalidation was not changed.
 - Slice 10 retention sweeper deleted-through watermark. Without that watermark, a cursor can walk a snapshot after rows have been deleted.
-- Local gitleaks. CI runs it.
+- Local gitleaks. CI runs it, including on this follow-up. The pull request records that run id.

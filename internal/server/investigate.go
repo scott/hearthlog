@@ -290,6 +290,7 @@ func (s *Server) writeQueryError(w http.ResponseWriter, r *http.Request, csrf st
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, csrf string, f uiForm, status int, code, msg string) {
+	w.Header().Set("X-Notice", code)
 	v := s.viewFromForm(r, csrf, f)
 	v.Status = msg
 	v.Code = code
@@ -306,6 +307,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, csrf string, f uiF
 }
 
 func writeStatusFragment(w http.ResponseWriter, v view, status int) {
+	w.Header().Set("X-Notice", v.Code)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)

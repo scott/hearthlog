@@ -283,3 +283,99 @@ test('auth denial: 401/403 fail closed, idempotent, no override', () => {
     assert.strictEqual(f.focusCount(), 1);
   }
 });
+
+test('status notices hit the live node', () => {
+  const env = makeEnv();
+  env.elements['status'].focus = () => {};
+  env.elements['status'].setAttribute = () => {};
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  const live = {
+    textContent: 'Results',
+    focusCount: 0,
+    focus() { this.focusCount++; },
+    setAttribute() {},
+    appendChild(el) { this.link = el; }
+  };
+  env.elements['status'] = live;
+  function fire(status, notice) {
+    const xhr = {
+      status,
+      responseText: '<script>alert(1)</script>',
+      abort() {},
+      getResponseHeader: (h) => (h === 'X-Notice' ? notice : ''),
+      responseURL: 'http://localhost:8080/investigate/search'
+    };
+    env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+    env.listeners['htmx:beforeRequest']({ detail: { xhr, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+    let prevented = false;
+    env.listeners['htmx:beforeSwap']({ detail: { xhr }, preventDefault() { prevented = true; } });
+    env.listeners['htmx:afterRequest']({ detail: { xhr } });
+    return prevented;
+  }
+  assert.strictEqual(fire(422, ''), true);
+  assert.strictEqual(live.textContent, 'Query too broad. Narrow the time window, then run Search.');
+  assert.ok(live.focusCount >= 1);
+  assert.ok(!live.textContent.includes('<script>'));
+  assert.strictEqual(fire(410, ''), true);
+  assert.strictEqual(live.textContent, 'Results expired. Rerun query.');
+  assert.strictEqual(fire(504, ''), true);
+  assert.strictEqual(live.textContent, 'Query timed out. Narrow the time window, then run Search.');
+  assert.strictEqual(fire(503, ''), true);
+  assert.strictEqual(live.textContent, 'Service busy. Wait, then run Search again.');
+  assert.strictEqual(fire(400, 'invalid_query'), true);
+  assert.strictEqual(live.textContent, 'Query is invalid');
+  assert.strictEqual(fire(400, 'unsupported_path'), true);
+  assert.strictEqual(live.textContent, 'Attribute path not supported');
+  assert.strictEqual(fire(404, 'row_expired'), true);
+  assert.strictEqual(live.textContent, 'Row expired. Rerun query. This row is past the retention window.');
+  assert.strictEqual(fire(404, 'not_found'), true);
+  assert.strictEqual(live.textContent, 'Event not found');
+  const kept = live.textContent;
+  env.listeners['htmx:afterRequest']({
+    detail: {
+      xhr: {
+        status: 400,
+        abort() {},
+        getResponseHeader: () => 'invalid_query',
+        responseURL: 'http://localhost:8080/investigate/search'
+      }
+    }
+  });
+  assert.strictEqual(live.textContent, kept);
+  const net = {
+    status: 0,
+    abort() {},
+    getResponseHeader: () => '',
+    responseURL: 'http://localhost:8080/investigate/search'
+  };
+  env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+  env.listeners['htmx:beforeRequest']({ detail: { xhr: net, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+  env.listeners['htmx:sendError']({ detail: { xhr: net } });
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
+  assert.strictEqual(fire(401, ''), true);
+  assert.strictEqual(live.textContent, 'Session expired. ');
+  assert.strictEqual(live.link.href, '/login');
+  assert.strictEqual(live.link.textContent, 'Sign in');
+});
+
+test('submit disables the submitter after the turn', () => {
+  const env = makeEnv();
+  const docListeners = {};
+  env.sandbox.document.addEventListener = (ev, cb) => { docListeners[ev] = cb; };
+  const timers = [];
+  env.sandbox.setTimeout = (fn) => { timers.push(fn); };
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  const first = { tagName: 'BUTTON', disabled: false, setAttribute() {}, isConnected: true };
+  const clicked = { tagName: 'BUTTON', disabled: false, busy: false, setAttribute() { this.busy = true; }, isConnected: true };
+  docListeners.submit({
+    target: { tagName: 'FORM', querySelector: () => first },
+    submitter: clicked
+  });
+  assert.strictEqual(clicked.disabled, false);
+  assert.strictEqual(first.disabled, false);
+  assert.strictEqual(timers.length, 1);
+  timers[0]();
+  assert.strictEqual(clicked.disabled, true);
+  assert.strictEqual(clicked.busy, true);
+  assert.strictEqual(first.disabled, false);
+});

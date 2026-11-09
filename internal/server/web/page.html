@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="strict-origin">
-<meta name="htmx-config" content='{"selfRequestsOnly":true,"allowEval":false,"allowScriptTags":false,"reportValidityOfForms":true,"timeout":5000,"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false}'>
+<meta name="htmx-config" content='{"selfRequestsOnly":true,"allowEval":false,"allowScriptTags":false,"reportValidityOfForms":true,"timeout":5000,"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false,"attributesToSettle":["class"]}'>
 <title>Hearthlog</title>
 <link rel="stylesheet" href="/assets/style.css">
 <script src="/assets/htmx.min.js" defer></script>
@@ -30,6 +30,7 @@
 
 {{define "filters"}}
 <form id="filters" method="POST" action="/investigate/search">
+<button type="submit" class="implicit-search" id="btn-search-implicit" name="intent" value="search" tabindex="-1" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">Search</button>
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <input type="hidden" name="generation" value="{{.Generation}}">
 <input type="hidden" name="sequence" value="{{.Sequence}}">
