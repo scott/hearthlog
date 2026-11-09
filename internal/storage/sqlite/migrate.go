@@ -48,7 +48,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			attributes TEXT NOT NULL CHECK (json_valid(attributes)),
 			trace_id TEXT,
 			span_id TEXT,
-			UNIQUE (workspace_id, source_id, batch_id),
 			FOREIGN KEY (workspace_id, source_id) REFERENCES sources(workspace_id, source_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(workspace_id, source_id, event_time DESC, ingest_id DESC)`,
@@ -65,6 +64,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN
 			INSERT INTO logs_fts(logs_fts, rowid, message) VALUES('delete', old.ingest_id, old.message);
 		END`,
+		`CREATE TABLE IF NOT EXISTS receipts (
+			workspace_id TEXT NOT NULL,
+			source_id TEXT NOT NULL,
+			batch_id TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			accepted INTEGER NOT NULL,
+			first_ingest_id INTEGER NOT NULL,
+			last_ingest_id INTEGER NOT NULL,
+			received_at INTEGER NOT NULL,
+			replay_until INTEGER NOT NULL,
+			body TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, source_id, batch_id),
+			FOREIGN KEY (workspace_id, source_id) REFERENCES sources(workspace_id, source_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS metadata (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,15 @@ func fakeIngest(t *testing.T, token string, status int) (*httptest.Server, *[][]
 		}
 		_ = json.Unmarshal(body, &b)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"version": 1, "batch_id": b.BatchID, "accepted": len(b.Events)})
+		n := len(b.Events)
+		if n < 1 {
+			n = 1
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version": 1, "batch_id": b.BatchID, "accepted": len(b.Events),
+			"first_ingest_id": "1", "last_ingest_id": fmt.Sprint(n),
+			"received_at": "2026-01-02T03:04:06Z", "replay_until": "2026-01-04T03:04:06Z",
+		})
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &bodies

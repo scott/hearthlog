@@ -366,7 +366,11 @@ func (s *state) validReceipt(body []byte, b *batch) bool {
 		return false
 	}
 	if s.native {
-		return *r.Version == 1
+		rec, err := model.ParseNativeReceipt(body)
+		if err != nil {
+			return false
+		}
+		return rec.Version == 1 && rec.BatchID == b.id && rec.Accepted == len(b.seqs)
 	}
 	return *r.Version == model.SkeletonVersion && r.Protocol != nil && *r.Protocol == model.SkeletonProtocol
 }

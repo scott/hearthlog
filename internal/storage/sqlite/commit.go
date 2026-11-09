@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +12,7 @@ import (
 var (
 	ErrBusy              = errors.New("busy")
 	ErrReplayUnsupported = errors.New("replay not supported")
+	ErrConflict          = errors.New("batch conflict")
 	ErrStorage           = errors.New("storage error")
 )
 
@@ -21,27 +21,34 @@ func (s *Store) Commit(ctx context.Context, scope model.Scope, b model.Batch) (m
 	if scope.WorkspaceID == "" || scope.SourceID == "" {
 		return receipt, ErrStorage
 	}
-	if len(b.Events) != 1 {
+	if b.Version != model.SkeletonVersion || len(b.Events) != 1 {
 		return receipt, ErrStorage
 	}
-	e := b.Events[0]
-
-	select {
-	case s.admit <- struct{}{}:
-	case <-time.After(100 * time.Millisecond):
-		return receipt, ErrBusy
-	}
-	defer func() { <-s.admit }()
-
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	tx, err := s.writer.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelDefault})
+	err := s.submit(ctx, scope.SourceID, 1, classIngest, func(ctx context.Context) error {
+		var err error
+		receipt, err = s.commitSkeleton(ctx, scope, b)
+		return err
+	})
 	if err != nil {
+		return model.Receipt{}, err
+	}
+	return receipt, nil
+}
+
+func (s *Store) commitSkeleton(ctx context.Context, scope model.Scope, b model.Batch) (model.Receipt, error) {
+	var receipt model.Receipt
+	tx, err := s.writer.BeginTx(ctx, nil)
+	if err != nil {
+		if isBusy(err) {
+			return receipt, ErrBusy
+		}
 		return receipt, ErrStorage
 	}
 	defer tx.Rollback()
 
+	e := b.Events[0]
 	var exists int
 	err = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM logs WHERE workspace_id=? AND source_id=? AND batch_id=?`,
@@ -54,9 +61,8 @@ func (s *Store) Commit(ctx context.Context, scope model.Scope, b model.Batch) (m
 		return receipt, ErrReplayUnsupported
 	}
 
-	now := time.Now().UTC().UnixMicro()
-
-	_, err = tx.ExecContext(ctx,
+	now := s.now().UTC().UnixMicro()
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO logs (workspace_id, source_id, batch_id, event_id, event_time, received_at, severity_number, severity_text, message, attributes, trace_id, span_id)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		scope.WorkspaceID, scope.SourceID, b.BatchID, e.EventID, e.EventTimeMicros, now,
@@ -66,28 +72,19 @@ func (s *Store) Commit(ctx context.Context, scope model.Scope, b model.Batch) (m
 	if err != nil {
 		return receipt, ErrStorage
 	}
-
-	var ingestID int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT ingest_id FROM logs WHERE workspace_id=? AND source_id=? AND batch_id=?`,
-		scope.WorkspaceID, scope.SourceID, b.BatchID,
-	).Scan(&ingestID)
+	ingestID, err := res.LastInsertId()
 	if err != nil {
 		return receipt, ErrStorage
 	}
-
-	_, err = tx.ExecContext(ctx,
-		`UPDATE metadata SET value=? WHERE key='watermark'`,
-		fmt.Sprintf("%d", ingestID),
-	)
-	if err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE metadata SET value=? WHERE key='watermark'`, fmt.Sprintf("%d", ingestID)); err != nil {
 		return receipt, ErrStorage
 	}
-
 	if err = tx.Commit(); err != nil {
+		if isBusy(err) {
+			return receipt, ErrBusy
+		}
 		return receipt, ErrStorage
 	}
-
 	receipt = model.Receipt{
 		Version:       model.SkeletonVersion,
 		Protocol:      model.SkeletonProtocol,
@@ -105,4 +102,25 @@ func nilIfEmpty(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+func (s *Store) now() time.Time {
+	fn, _ := s.clock.Load().(func() time.Time)
+	if fn == nil {
+		return time.Now()
+	}
+	return fn()
+}
+
+// Watermark reads the persisted commit watermark. It is not an in-memory counter.
+func (s *Store) Watermark(ctx context.Context) (int64, error) {
+	var v string
+	if err := s.reader.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='watermark'`).Scan(&v); err != nil {
+		return 0, ErrStorage
+	}
+	var id int64
+	if _, err := fmt.Sscan(v, &id); err != nil || id < 0 {
+		return 0, ErrStorage
+	}
+	return id, nil
 }

@@ -5,6 +5,15 @@ import "encoding/json"
 // SkeletonVersion is the experimental skeleton protocol version.
 const SkeletonVersion = 0
 
+// NativeVersion is the NATIVE-V1 envelope version.
+const NativeVersion = 1
+
+// Provisional native batch bounds from the v1 contract.
+const (
+	MaxNativeEvents = 200
+	MaxNativeBytes  = 256 * 1024
+)
+
 // SkeletonProtocol identifies the experimental skeleton receipt protocol.
 const SkeletonProtocol = "experimental-skeleton"
 

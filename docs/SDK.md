@@ -43,7 +43,7 @@ The endpoint path selects the envelope:
 
 | Endpoint | Envelope | Server support today |
 |---|---|---|
-| `http://127.0.0.1:<PORT>/api/v1/batches` | NATIVE-V1 `version: 1`, <=200 events | Not yet served (404) until Slice 04 |
+| `http://127.0.0.1:<PORT>/api/v1/batches` | NATIVE-V1 `version: 1`, <=200 events | Served. Receipt replay is idempotent for 48h; `first_ingest_id`, `last_ingest_id` and `replay_until` are JSON strings |
 | `http://127.0.0.1:<PORT>/api/experimental/skeleton/batches` | Slice 02 skeleton `version: 0`, 1 event | Served by the local skeleton |
 
 Only loopback `http` URLs with an explicit port are accepted, matching the
