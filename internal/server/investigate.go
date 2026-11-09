@@ -88,7 +88,11 @@ func (s *Server) detailPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, err := s.store.Detail(r.Context(), model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, strconv.FormatUint(id, 10))
 	if err != nil {
-		safeError(w, http.StatusNotFound, "not_found", "Not found", false)
+		if errors.Is(err, sqlite.ErrNotFound) {
+			safeError(w, http.StatusNotFound, "not_found", "Not found", false)
+			return
+		}
+		safeError(w, http.StatusServiceUnavailable, "storage_unavailable", "Storage unavailable", true)
 		return
 	}
 	v := view{

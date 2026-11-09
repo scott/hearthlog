@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type atomicValuer struct {
@@ -49,7 +51,6 @@ func TestRedactionSnapshot(t *testing.T) {
 
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "hello "+canary, 0)
 	rec.AddAttrs(
-		slog.Any("arbitrary", struct{ X string }{canary}),
 		slog.String("password", "p"),
 		slog.String("canary_attr", canary),
 		slog.String("safe", "ok"),
@@ -77,10 +78,6 @@ func TestRedactionSnapshot(t *testing.T) {
 
 	if v, ok := attrs["mut"]; !ok || v != "v1" {
 		t.Errorf("mut not captured as v1: %v", v)
-	}
-
-	if _, ok := attrs["arbitrary"]; ok {
-		t.Error("arbitrary Any should be dropped")
 	}
 
 	if _, ok := attrs["password"]; ok {
@@ -118,5 +115,86 @@ func TestRedactionSnapshot(t *testing.T) {
 	raw := string(ev.Attributes)
 	if strings.Contains(raw, canary) {
 		t.Error("canary present in raw attributes")
+	}
+}
+
+func TestSnapshotRejectsUnsupportedAttr(t *testing.T) {
+	h, err := New("http://127.0.0.1:9999/api/experimental/skeleton/batches", "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "synthetic", 0)
+	rec.AddAttrs(slog.Any("arbitrary", struct{ X string }{"secret"}))
+	if _, err := h.snapshot(rec); !errors.Is(err, ErrRedactValue) {
+		t.Fatalf("snapshot err = %v, want ErrRedactValue", err)
+	}
+
+	before := h.state.drops.Load()
+	if err := h.Handle(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.state.drops.Load(); got != before+1 {
+		t.Fatalf("drops = %d, want %d", got, before+1)
+	}
+}
+
+func TestSnapshotRejectsAttrOverflow(t *testing.T) {
+	h, err := New("http://127.0.0.1:9999/api/experimental/skeleton/batches", "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+
+	cur := slog.Handler(h)
+	for i := 0; i < maxAttrs; i++ {
+		cur = cur.WithAttrs([]slog.Attr{slog.String(fmt.Sprintf("k%d", i), "v")})
+	}
+	hh, ok := cur.(*Handler)
+	if !ok || hh.invalid {
+		t.Fatal("filling to the attribute cap should stay valid")
+	}
+
+	extra := slog.NewRecord(time.Now(), slog.LevelInfo, "synthetic", 0)
+	extra.AddAttrs(slog.String("extra", "v"))
+	if _, err := hh.snapshot(extra); !errors.Is(err, ErrRedactMembers) {
+		t.Fatalf("snapshot err = %v, want ErrRedactMembers", err)
+	}
+
+	secretOnly := slog.NewRecord(time.Now(), slog.LevelInfo, "synthetic", 0)
+	secretOnly.AddAttrs(slog.String("password", "p"))
+	if _, err := hh.snapshot(secretOnly); err != nil {
+		t.Fatalf("dropped secret key at cap should not fail snapshot: %v", err)
+	}
+}
+
+func TestMessageTruncationPreservesRunes(t *testing.T) {
+	h, err := New("http://127.0.0.1:9999/api/experimental/skeleton/batches", "tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+
+	prefix := strings.Repeat("a", maxMsgLen-1)
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, prefix+"€", 0)
+	ev, err := h.snapshot(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.ValidString(ev.Message) {
+		t.Fatalf("truncated message is invalid UTF-8: %q", ev.Message)
+	}
+	if ev.Message != prefix {
+		t.Fatalf("message = %q, want the %d-byte prefix", ev.Message, len(prefix))
+	}
+
+	bad := slog.NewRecord(time.Now(), slog.LevelInfo, "ok\xfftail", 0)
+	ev, err = h.snapshot(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Message != "ok\ufffdtail" {
+		t.Fatalf("invalid sequence message = %q", ev.Message)
 	}
 }

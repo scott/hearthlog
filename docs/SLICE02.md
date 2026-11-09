@@ -95,8 +95,9 @@ curl --retry 5 --retry-connrefused --retry-max-time 10 -sf http://127.0.0.1:8787
 ## Evidence
 - Automated: file-backed SQLite migration/ingest/search, race, HTTP integration, and Node unit fixtures via pinned local commands.
 - Browser (source tree 9b60679, pre-current accessibility revision): JS-disabled authenticated search/detail/back 200 DOCUMENT with filters preserved; JS-enabled htmx search/detail 200 XHR, Enter/Back, clean console; inert literal hostile text; raw typed attributes; sanitized synthetic screenshots; 320px wrap/no overflow; separate 200% zoom pass (not combined with 320px).
-- Not run / not claimed: initial JS-disabled login, current accessibility retest (skiplink/keyboard/main focus/error+denial focus), Back origin focus, combined 320px+200%, browser stale/cancel/denial/pagehide/persisted history/privacy, C1–C8 blanket pass, remote CI (pre-merge gate).
-- Canary secret absent from wire/store/FTS/HTML/diagnostics (tested).
+- Local post-#16 QA (current revision `dbe3937`): see [SLICE02-LOCAL.md](evidence/SLICE02-LOCAL.md). Reproduced the automated gates, the live browser pass (login → 100-row search → detail → Back-origin focus → hostile-data escaping → combined 320px@2× → controlled 401 safe-status denial), the protocol checks (404/401/200/501), persistence across restart, and canary absence across store/FTS/HTML/diagnostics.
+- Not run / not claimed: remote CI (pre-merge gate, Linux amd64 target); Live (C8) and skeleton-unreachable states (503/429/504/410, multi-source empty) — out of Slice 02 scope, deferred to Slices 06–07. See the Limitations section of the evidence file for the two items needing a focused-window confirmation (skiplink live `:focus` reveal; narrow-viewport via emulation rather than a physical display).
+- Canary secret absent from store/FTS/HTML/diagnostics (tested; wire carries the pre-transmission value by design).
 
 ## Experimental Skeleton Protocol (Version 0)
 

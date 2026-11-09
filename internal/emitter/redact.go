@@ -43,7 +43,19 @@ func scrubString(s string, secrets []string) string {
 		}
 	}
 	if len(s) > maxStringBytes {
-		s = s[:maxStringBytes]
+		s = truncateUTF8(s, maxStringBytes)
+	}
+	return s
+}
+
+// truncateUTF8 shortens s to at most max bytes without splitting a rune.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
 	}
 	return s
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -69,27 +70,34 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 func (h *Handler) snapshot(r slog.Record) (model.Event, error) {
 	attrs := cloneMap(h.base)
 	count := len(h.base)
+	var snapErr error
 	r.Attrs(func(a slog.Attr) bool {
-		if count >= maxAttrs {
-			return false
-		}
 		if shouldDropKey(a.Key) {
 			return true
 		}
 		if !utf8.ValidString(a.Key) || len(a.Key) > 128 {
-			return true
+			snapErr = ErrRedactKey
+			return false
 		}
 		if scrubString(a.Key, h.state.secrets) != a.Key {
 			return true
 		}
+		if count >= maxAttrs {
+			snapErr = ErrRedactMembers
+			return false
+		}
 		sanitized, err := sanitizeValue(a.Value, h.state.secrets, 1)
 		if err != nil {
-			return true
+			snapErr = err
+			return false
 		}
 		placeUnderGroups(attrs, h.groups, a.Key, sanitized)
 		count++
 		return true
 	})
+	if snapErr != nil {
+		return model.Event{}, snapErr
+	}
 
 	raw, err := json.Marshal(attrs)
 	if err != nil || len(raw) > maxAttrJSON {
@@ -98,10 +106,10 @@ func (h *Handler) snapshot(r slog.Record) (model.Event, error) {
 
 	msg := scrubString(r.Message, h.state.secrets)
 	if len(msg) > maxMsgLen {
-		msg = msg[:maxMsgLen]
+		msg = truncateUTF8(msg, maxMsgLen)
 	}
 	if !utf8.ValidString(msg) {
-		msg = "\uFFFD"
+		msg = strings.ToValidUTF8(msg, "\uFFFD")
 	}
 
 	t := r.Time

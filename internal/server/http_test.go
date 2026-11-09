@@ -119,6 +119,40 @@ func TestDBFailure(t *testing.T) {
 	}
 }
 
+func TestDetailMissingVsStorageFailure(t *testing.T) {
+	store, ts, readTok, _, _ := newTestApp(t)
+	client, csrf := login(t, ts, readTok)
+	origin := "http://" + ts.Listener.Addr().String()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	vals := url.Values{
+		"csrf":       {csrf},
+		"source":     {"src_demo_api"},
+		"from":       {now.Add(-time.Minute).Format(time.RFC3339Nano)},
+		"to":         {now.Add(time.Minute).Format(time.RFC3339Nano)},
+		"severity":   {"1"},
+		"generation": {"1"},
+		"sequence":   {"1"},
+		"id":         {"1"},
+	}
+
+	code, _, body := postForm(t, client, origin, "/investigate/detail", vals, false)
+	if code != http.StatusNotFound {
+		t.Fatalf("missing detail status: %d body: %s", code, body)
+	}
+	if !strings.Contains(string(body), `"not_found"`) {
+		t.Fatalf("missing detail body: %s", body)
+	}
+
+	store.Close()
+	code, _, body = postForm(t, client, origin, "/investigate/detail", vals, false)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("closed db detail status: %d body: %s", code, body)
+	}
+	if !strings.Contains(string(body), `"storage_unavailable"`) {
+		t.Fatalf("closed db detail body: %s", body)
+	}
+}
+
 func TestSearchFullPage(t *testing.T) {
 	_, ts, readTok, writeTok, _ := newTestApp(t)
 
