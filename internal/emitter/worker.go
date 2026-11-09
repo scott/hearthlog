@@ -210,7 +210,9 @@ func (s *state) deliver(b *batch) {
 		}
 		delay := backoff(attempt, s.clk.Jitter())
 		if retryAfter >= 0 {
-			delay = retryAfter
+			// Floor at MinBackoff: Retry-After: 0 or a past HTTP-date must not
+			// turn into an unthrottled loop against an overloaded server.
+			delay = max(retryAfter, MinBackoff)
 		}
 		if s.clk.Now().Add(delay).After(deadline) {
 			s.finish(b, ReasonRetryExhausted, status)

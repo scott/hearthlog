@@ -16,10 +16,16 @@ production approval.
 | Fail closed | Redaction/conversion failures, >128 attributes, nesting >8, events >32KiB, reserved root keys (`service`, `environment`, ...) and event times outside the server window drop that event with a counted reason. Nothing is written to stderr. |
 | Bounded queue | 2,048 events AND 8MiB serialized bytes; overflow drops the newest event and counts it by reason and severity. `Handle` never waits for the network. |
 | Batching | <=200 events or <=256KiB per request, sent when full or 250ms after the oldest queued event; at most 2 requests in flight; 5s per request. The skeleton route sends 1 event per batch. |
-| Retry | Network errors, timeouts, 429, 500/502/503/504 resend the identical bytes and `batch_id` with jittered exponential backoff (250ms..5s) or `Retry-After`, bounded by a 60s budget per batch. A `Retry-After` beyond the remaining budget ends the batch immediately. Batches are never split or re-identified. |
+| Retry | Network errors, timeouts, 429, 500/502/503/504 resend the identical bytes and `batch_id` with jittered exponential backoff (250ms..5s) or `Retry-After`, bounded by a 60s budget per batch. `Retry-After` is clamped to at least 250ms, so `0` or a past HTTP-date cannot cause a tight loop. A `Retry-After` beyond the remaining budget ends the batch immediately. Only 500/502/503/504 are retried among 5xx, on purpose: other 5xx (for example 501, 505, 507) are treated as terminal. Batches are never split or re-identified. |
 | Terminal | 400/404/409/413/415/422/501 and redirects (never followed) drop the batch as `rejected`. 401/403 stop the sender: queued and later events count as `unauthorized` until a new handler is built with a valid token. |
 | Flush / Close | `Flush(ctx)` waits for events accepted before the call; on deadline it returns `*DeliveryError` with `Unsent`. `Close(ctx)` stops acceptance, drains, and at the deadline cancels in-flight work and counts abandoned events as `shutdown_unsent`. Close is idempotent and leaves no goroutines. Both also report `ErrUndelivered` if any event was dropped since start. |
 | Diagnostics | `Stats()` counters plus an optional `OnDiagnostic` hook that receives only reason, severity, count and HTTP status. The hook never recurses (nested or concurrent calls are counted as `DiagnosticsSuppressed`) and is never called while the SDK holds its lock. |
+
+Errors: `slog.Any("err", err)` passes an arbitrary object, which fails closed
+and drops the whole event (`redaction_failed`). Log the text instead:
+`slog.String("err", err.Error())` or `"err", err.Error()`. The string is still
+scrubbed of the token and configured secrets, but free text is not guaranteed
+PII-free, so only log error text you would accept on the wire.
 
 Non-goals: no durable spool, no local replay fallback, no delivery guarantee.
 SIGKILL or a Close deadline can lose queued and in-flight events; they are

@@ -253,6 +253,8 @@ func TestRetryAfterBoundedByBudget(t *testing.T) {
 		{"http_date", func(now time.Time) string { return now.Add(3 * time.Second).Format(http.TimeFormat) }, []time.Duration{3 * time.Second}, 1, 2},
 		{"beyond_budget", func(time.Time) string { return "120" }, nil, 0, 1},
 		{"invalid_falls_back", func(time.Time) string { return "soon" }, []time.Duration{MinBackoff}, 1, 2},
+		{"zero_clamped", func(time.Time) string { return "0" }, []time.Duration{MinBackoff}, 1, 2},
+		{"past_date_clamped", func(now time.Time) string { return now.Add(-time.Hour).Format(http.TimeFormat) }, []time.Duration{MinBackoff}, 1, 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -274,6 +276,11 @@ func TestRetryAfterBoundedByBudget(t *testing.T) {
 			got := clk.slept()
 			if st.AckedEvents != tc.wantAcked || len(bodies) != tc.wantAtt || fmt.Sprint(got) != fmt.Sprint(tc.wantSleeps) {
 				t.Fatalf("acked=%d attempts=%d sleeps=%v", st.AckedEvents, len(bodies), got)
+			}
+			for _, d := range got {
+				if d < MinBackoff {
+					t.Fatalf("sleep %v below %v floor", d, MinBackoff)
+				}
 			}
 			if tc.wantAcked == 0 && st.Dropped["retry_exhausted"]["INFO"] != 1 {
 				t.Fatalf("dropped %v", st.Dropped)
