@@ -9,10 +9,17 @@ import (
 var hexRe = regexp.MustCompile(`^[0-9a-f]+$`)
 
 func validateEvent(e *Event, now time.Time) error {
+	if err := validateEventShape(e); err != nil {
+		return err
+	}
+	return AdmitEventTime(e.EventTimeMicros, now)
+}
+
+func validateEventShape(e *Event) error {
 	if !uuidRe.MatchString(e.EventID) {
 		return ErrValidation
 	}
-	micros, err := validateTime(e.EventTime, now)
+	micros, err := parseEventTime(e.EventTime)
 	if err != nil {
 		return err
 	}

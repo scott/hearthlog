@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -59,6 +60,15 @@ func TestWireFixtures(t *testing.T) {
 				rc := map[string]any{"version": b.Version, "batch_id": b.BatchID, "accepted": len(b.Events)}
 				if b.Version == model.SkeletonVersion {
 					rc["protocol"] = model.SkeletonProtocol
+				} else {
+					n := len(b.Events)
+					if n < 1 {
+						n = 1
+					}
+					rc["first_ingest_id"] = "1"
+					rc["last_ingest_id"] = strconv.Itoa(n)
+					rc["received_at"] = "2026-01-02T03:04:06Z"
+					rc["replay_until"] = "2026-01-04T03:04:06Z"
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(rc)

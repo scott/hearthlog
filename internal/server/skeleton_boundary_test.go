@@ -58,10 +58,10 @@ func TestSkeletonBoundary(t *testing.T) {
 		t.Fatalf("missing replay_not_supported for changed: %s", body)
 	}
 
-	// 4. Canonical /api/v1/batches: 404
-	status, _, _ = skeletonPost(t, ts, writeTok, raw, "/api/v1/batches")
-	if status != http.StatusNotFound {
-		t.Fatalf("canonical status: %d", status)
+	// 4. Version 0 on the native route is rejected and does not add a row.
+	status, _, body = skeletonPost(t, ts, writeTok, raw, "/api/v1/batches")
+	if status != http.StatusBadRequest {
+		t.Fatalf("native version 0 status: %d body: %s", status, body)
 	}
 
 	// 5. Experimental endpoint with version 1: 400

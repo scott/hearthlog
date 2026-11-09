@@ -61,6 +61,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.detailPOST(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/experimental/skeleton/batches":
 		s.ingest(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/batches":
+		s.nativeIngest(w, r)
 	case r.Method == http.MethodGet && len(r.URL.Path) > 8 && r.URL.Path[:8] == "/assets/":
 		s.assets(w, r)
 	default:
