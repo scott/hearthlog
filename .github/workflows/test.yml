@@ -1,0 +1,29 @@
+name: test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: "1"
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.3
+      - run: go mod verify
+      - run: test -z "$(gofmt -l .)"
+      - run: go test -race -count=1 -tags "fts5 sqlite_omit_load_extension" ./...
+      - run: go vet -tags "fts5 sqlite_omit_load_extension" ./...
+      - run: node --test internal/server/web/app.test.js
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - run: gitleaks dir --redact --no-banner
+      - run: gitleaks git --redact --no-banner

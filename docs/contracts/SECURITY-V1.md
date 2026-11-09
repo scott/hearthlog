@@ -19,7 +19,7 @@ operator's host, not database-enforced hostile-tenant isolation.
 | Message, attrs, query text | Escaped data only | html/template everywhere; never template.HTML/JS/URL; no hx/data-hx/template injection; literal quoted FTS, bound path/value parameters, no raw SQL |
 | Untrusted client/resource pressure | Bounded input/admission/readers/Live | Body/decompression caps, per-source bounded rate buckets, writer/read/VM/deadline limits; no unbounded labels/queues/retries |
 | Database/backup file reader | Operator/service filesystem boundary only | Private directory/files incl sidecars and snapshots; no DB download; encrypted volume/backup for sensitive use; SQLite not encrypted by default |
-| Browser/cache/history | Session-bound same-origin pages | no-store, Vary HX-Request, no-referrer, htmx history disabled, strict CSP, no external htmx/CDN/eval/inline handlers, stale generation discarded |
+| Browser/cache/history | Session-bound same-origin pages | no-store, Vary HX-Request, Referrer-Policy: strict-origin (HTTP header and document meta agree; allows native same-origin POST; origin-only, no path/query/filter terms/fragment/credentials; cross-origin non-downgrade MAY disclose UI origin scheme/host/port; suppresses HTTPS downgrade; exact Host and missing/null/foreign Origin fail closed; CSRF mandatory), htmx history disabled, strict CSP, no external htmx/CDN/eval/inline handlers, stale generation discarded |
 | SDK redaction failure/free text | Already-redacted bounded events only | Recursive secret-key stripping/default-deny bodies/headers/arbitrary objects, safe hooks/counters; fail closed, no payload stderr; free text is not guaranteed PII-free |
 
 Every storage SELECT/JOIN/UPDATE/DELETE requires authenticated workspace scope,

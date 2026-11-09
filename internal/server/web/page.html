@@ -1,0 +1,48 @@
+{{define "page"}}
+<!DOCTYPE html>
+<html lang="en" hx-history="false" hx-push-url="false" hx-replace-url="false">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="strict-origin">
+<meta name="htmx-config" content='{"selfRequestsOnly":true,"allowEval":false,"allowScriptTags":false,"reportValidityOfForms":true,"timeout":5000,"historyCacheSize":0,"historyRestoreAsHxRequest":false,"includeIndicatorStyles":false}'>
+<title>Hearthlog</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script src="/assets/htmx.min.js" defer></script>
+<script src="/assets/app.js" defer></script>
+</head>
+<body>
+<a class="skiplink" href="#investigation">Skip to main content</a>
+<header><h1>Hearthlog</h1><p class="banner">Walking skeleton. No Live, filtering, or pagination.</p></header>
+<main id="investigation" tabindex="-1" hx-sync="#investigation:replace">
+<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="generation" value="{{.Generation}}">
+<input type="hidden" name="sequence" value="{{.Sequence}}">
+<fieldset>
+<legend>Search</legend>
+<label for="f-source">Source</label>
+<input type="text" id="f-source" name="source" value="{{first .Query.Sources}}" readonly>
+<label for="f-from">From (UTC)</label>
+<input type="text" id="f-from" name="from" value="{{.Query.From}}">
+<label for="f-to">To (UTC)</label>
+<input type="text" id="f-to" name="to" value="{{.Query.To}}">
+<label for="f-severity">Min severity</label>
+<input type="number" id="f-severity" name="severity" value="{{.Query.MinSeverity}}" min="1" max="24">
+<label for="f-term">Term</label>
+<input type="text" id="f-term" name="term" value="{{first .Query.Terms}}">
+<button type="submit" id="btn-search">Search</button>
+</fieldset>
+</form>
+{{if .Detail}}
+<div id="results-region" aria-live="polite" tabindex="-1"></div>
+{{template "detail" .}}
+{{else}}
+{{template "results" .}}
+<div id="detail-region"></div>
+{{end}}
+<p id="status" aria-live="polite" tabindex="-1">{{.Status}}</p>
+</main>
+</body>
+</html>
+{{end}}

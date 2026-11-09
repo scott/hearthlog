@@ -34,3 +34,5 @@
 /captures/
 /dist/
 /bin/
+*.token
+*.tokens

@@ -1,0 +1,10 @@
+{{define "context"}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="source" value="{{first .Query.Sources}}">
+<input type="hidden" name="from" value="{{.Query.From}}">
+<input type="hidden" name="to" value="{{.Query.To}}">
+<input type="hidden" name="severity" value="{{.Query.MinSeverity}}">
+<input type="hidden" name="term" value="{{first .Query.Terms}}">
+<input type="hidden" name="generation" value="{{.Generation}}">
+<input type="hidden" name="sequence" value="{{.Sequence}}">
+{{end}}

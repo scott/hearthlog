@@ -1,0 +1,22 @@
+{{define "detail"}}
+<div id="detail-region" data-fragment-kind="detail" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}" data-selection="{{.Selection}}" data-origin="{{.OriginID}}">
+{{if .Detail}}
+<section class="detail" data-event-id="{{.Detail.EventID}}" data-ingest-id="{{.Detail.IngestID}}" data-severity="{{.Detail.SeverityNumber}}" data-time="{{.Detail.EventTime}}" data-source="{{.Detail.SourceID}}">
+<h2 id="detail-heading" tabindex="-1">{{.Detail.SeverityText}}: {{.Detail.Message}}</h2>
+<dl class="detail-meta">
+<dt>Event time</dt><dd>{{.Detail.EventTime}}</dd>
+<dt>Received</dt><dd>{{.Detail.ReceivedAt}}</dd>
+<dt>Severity</dt><dd>{{.Detail.SeverityNumber}} ({{.Detail.SeverityText}})</dd>
+<dt>Source</dt><dd>{{.Detail.SourceID}}</dd>
+</dl>
+<p class="detail-message">{{.Detail.Message}}</p>
+<pre class="detail-attrs">{{printf "%s" .Detail.Attributes}}</pre>
+<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+{{template "context" .}}
+<input type="hidden" name="origin" value="{{.Detail.IngestID}}">
+<button type="submit">Back to results</button>
+</form>
+</section>
+{{end}}
+</div>
+{{end}}

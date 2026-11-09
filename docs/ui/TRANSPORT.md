@@ -50,7 +50,7 @@ Live failures invoke the shared stop transition from [LIVE.md](LIVE.md) before r
     *   **410:** "Results expired" (Action: "Rerun query").
     *   **Unexpected Bodies:** Never inserted into DOM.
 *   **Login Redirects:** If a 302 occurs, the browser may auto-follow. The handler does **not** detect intermediate 302s. It requires the *final* response to be same-origin, HTML content-type, and contain fixed fragment-kind/generation headers. Missing markers trigger a full navigation to `/investigate`. Untrusted URLs are never returned.
-*   **Headers:** `Cache-Control: no-store`, `Vary: HX-Request`, `Referrer-Policy: no-referrer` on all authenticated responses and errors.
+*   **Headers:** `Cache-Control: no-store`, `Vary: HX-Request`, `Referrer-Policy: strict-origin` applies to full pages, fragments, and errors; matching document meta with no conflicting override; native same-origin POST allowed; origin-only disclosure (no path/query/filter terms/fragment); cross-origin non-downgrade MAY disclose UI origin scheme/host/port; suppresses HTTPS downgrade; exact Host and missing/null/foreign Origin fail closed; CSRF and fixed same-origin redirect unchanged.
 *   **Privacy:** No persistent browser storage/telemetry. Server logs exclude raw query strings. `pagehide` clears protected DOM; `pageshow` triggers full authenticated reload **only** if triggered by persistence restoration (persisted flag true), not on initial load.
 
 ## Accessibility
