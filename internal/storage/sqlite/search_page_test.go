@@ -39,7 +39,7 @@ func TestSearchPageKeysetAndCursor(t *testing.T) {
 		Sources: []string{"src_demo_api"}, From: frozen.Add(-15 * time.Minute).Format(time.RFC3339Nano),
 		To: frozen.Format(time.RFC3339Nano), MinSeverity: 1, Terms: []string{"equal-stamp"}, Limit: 2,
 	}
-	sqlText, args, err := buildSearchSQL(q, keyset{horizon: 100, cutoff: 0})
+	sqlText, args, err := buildSearchSQL(q, keyset{horizon: 100, cutoff: 0}, orderFTS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,8 @@ func TestSearchPageKeysetAndCursor(t *testing.T) {
 		t.Fatalf("epoch: %v", err)
 	}
 
-	// Retention minute crossing, still inside the 15m TTL.
+	// A minute boundary does not expire a cursor when no in-scope row falls
+	// out of retention. The 15m TTL above is a separate check.
 	store.clock.Store(func() time.Time { return frozen })
 	fresh, err := store.ReadPage(ctx, scope, model.Query{
 		Sources: q.Sources, From: q.From, To: q.To, MinSeverity: 1, Terms: q.Terms, Limit: 2,
@@ -154,8 +155,8 @@ func TestSearchPageKeysetAndCursor(t *testing.T) {
 	}
 	store.clock.Store(func() time.Time { return frozen.Add(time.Minute) })
 	next := model.Query{Sources: q.Sources, From: q.From, To: q.To, MinSeverity: 1, Terms: q.Terms, Limit: 2, Cursor: fresh.Next}
-	if _, err := store.ReadPage(ctx, scope, next); !errors.Is(err, ErrCursorExpired) {
-		t.Fatalf("retention: %v", err)
+	if _, err := store.ReadPage(ctx, scope, next); err != nil {
+		t.Fatalf("minute step: %v", err)
 	}
 }
 
@@ -423,8 +424,12 @@ func TestIndexesAndExplain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("explain_fts=%s", plan)
-	if !strings.Contains(plan, "logs_fts") {
-		t.Fatalf("plan missing fts: %s", plan)
+	first := plan
+	if i := strings.IndexByte(plan, '\n'); i >= 0 {
+		first = plan[:i]
+	}
+	if !strings.Contains(first, "logs_fts") {
+		t.Fatalf("fts plan does not drive from logs_fts: %s", plan)
 	}
 }
 
@@ -436,6 +441,16 @@ func TestFTSDeleteTrigger(t *testing.T) {
 	store.clock.Store(func() time.Time { return frozen })
 	if _, err := store.Commit(ctx, scope, eventBatch(t, 1, frozen.Add(-time.Minute), "delete-me token", `{"k":1}`)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, scope, eventBatch(t, 2, frozen.Add(-time.Minute), "keep-me token", `{"k":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	err := store.SubmitMaintenance(ctx, 1, func(ctx context.Context) error {
+		_, err := store.writer.ExecContext(ctx, `UPDATE logs SET message='rewritten zebra' WHERE message LIKE 'keep-me%'`)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "logs are immutable") {
+		t.Fatalf("update: %v", err)
 	}
 	if err := store.SubmitMaintenance(ctx, 1, func(ctx context.Context) error {
 		_, err := store.writer.ExecContext(ctx, `DELETE FROM logs WHERE message LIKE 'delete-me%'`)
@@ -451,8 +466,65 @@ func TestFTSDeleteTrigger(t *testing.T) {
 	if err != nil || len(page.Rows) != 0 {
 		t.Fatalf("after delete: %v n=%d", err, len(page.Rows))
 	}
-	if _, err := store.writer.ExecContext(ctx, `INSERT INTO logs_fts(logs_fts) VALUES('integrity-check')`); err != nil {
+	if _, err := store.writer.ExecContext(ctx, `INSERT INTO logs_fts(logs_fts, rank) VALUES('integrity-check', 1)`); err != nil {
 		t.Fatalf("fts integrity: %v", err)
+	}
+}
+
+func TestCursorHeldUntilRowFallsOut(t *testing.T) {
+	store, _ := freshStore(t)
+	frozen := time.Date(2026, 8, 1, 12, 0, 30, 0, time.UTC)
+	store.clock.Store(func() time.Time { return frozen })
+	ctx := context.Background()
+	scope := model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}
+	when := frozen.Add(-2 * time.Minute)
+	for i := 0; i < 3; i++ {
+		if _, err := store.Commit(ctx, scope, eventBatch(t, i+1, when, "cursor hold", `{"k":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := model.Query{
+		Sources: []string{"src_demo_api"}, From: frozen.Add(-15 * time.Minute).Format(time.RFC3339Nano),
+		To: frozen.Format(time.RFC3339Nano), MinSeverity: 1, Terms: []string{"hold"}, Limit: 1,
+	}
+	first, err := store.ReadPage(ctx, scope, q)
+	if err != nil || first.Next == "" || len(first.Rows) != 1 {
+		t.Fatalf("first: %v rows=%d next=%t", err, len(first.Rows), first.Next != "")
+	}
+	store.clock.Store(func() time.Time { return frozen.Add(14 * time.Minute) })
+	held := q
+	held.Cursor = first.Next
+	page, err := store.ReadPage(ctx, scope, held)
+	if err != nil || len(page.Rows) != 1 {
+		t.Fatalf("14m: %v rows=%d", err, len(page.Rows))
+	}
+
+	store.clock.Store(func() time.Time { return frozen })
+	edgeAt := retentionCutoff(frozen) + int64(time.Second/time.Microsecond)
+	if err := store.SubmitMaintenance(ctx, 1, func(ctx context.Context) error {
+		res, err := store.writer.ExecContext(ctx, `INSERT INTO logs (workspace_id, source_id, batch_id, event_id, event_time, received_at, severity_number, severity_text, message, attributes)
+			VALUES ('ws_demo_a', 'src_demo_api', 'edge-batch', 'edge-event', ?, ?, 9, 'INFO', 'cursor edge hold', '{"k":1}')`, when.UnixMicro(), edgeAt)
+		if err != nil {
+			return err
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		_, err = store.writer.ExecContext(ctx, `UPDATE metadata SET value=? WHERE key='watermark'`, fmt.Sprintf("%d", id))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	edgePage, err := store.ReadPage(ctx, scope, q)
+	if err != nil || len(edgePage.Rows) != 1 || !strings.Contains(edgePage.Rows[0].Message, "edge") || edgePage.Next == "" {
+		t.Fatalf("edge page: %v rows=%v", err, messages(edgePage.Rows))
+	}
+	store.clock.Store(func() time.Time { return frozen.Add(2 * time.Minute) })
+	fallen := q
+	fallen.Cursor = edgePage.Next
+	if _, err := store.ReadPage(ctx, scope, fallen); !errors.Is(err, ErrCursorExpired) {
+		t.Fatalf("fallen row: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package model
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,5 +99,24 @@ func TestPredicatePaths(t *testing.T) {
 	}
 	if err := ValidateQuery(nine); err == nil {
 		t.Fatal("expected predicate cap")
+	}
+}
+
+func TestValidateQueryDoesNotMutateSharedPredicates(t *testing.T) {
+	q := baseQuery()
+	q.Predicates = []Predicate{{Path: []string{"n"}, Op: "eq", Type: "integer", Value: []byte(" 1 ")}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := ValidateQuery(q); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if string(q.Predicates[0].Value) != " 1 " {
+		t.Fatalf("caller predicate changed: %q", q.Predicates[0].Value)
 	}
 }

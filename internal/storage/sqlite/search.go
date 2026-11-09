@@ -65,9 +65,9 @@ func normalizeQuery(q model.Query) (model.Query, error) {
 	return q, nil
 }
 
-// retentionCutoff is the receipt-time horizon, truncated to a minute so a
-// page turn inside that minute keeps the frozen snapshot. The next minute
-// invalidates the cursor instead of dropping rows quietly.
+// retentionCutoff is the receipt-time horizon, truncated to the UTC minute.
+// A cursor keeps the cutoff it was issued with. It expires only when a row
+// inside that snapshot has a received_at the new cutoff would drop.
 func retentionCutoff(now time.Time) int64 {
 	return now.UTC().Truncate(time.Minute).Add(-7 * 24 * time.Hour).UnixMicro()
 }
@@ -108,24 +108,21 @@ func (s *Store) ReadPage(ctx context.Context, scope model.Scope, q model.Query) 
 		if err != nil {
 			return err
 		}
-		budget.arm(stepLimit(ctx))
-		sqlText, args, err := buildSearchSQL(q, ks)
+		// Term queries try FTS-first. Each pass keeps the 100000-step cap.
+		// A tripped FTS pass is discarded and the time-index pass runs under
+		// a fresh cap, so a common token can still stop after LIMIT rows.
+		// The binary does not run ANALYZE; the join order is not left to the planner.
+		order := orderTime
+		if len(q.Terms) > 0 {
+			budget.arm(stepLimit(ctx))
+			order = orderFTS
+		}
+		recs, more, lastT, lastID, err := readOrdered(ctx, conn, scope.WorkspaceID, q, ks, order)
+		if len(q.Terms) > 0 && budget.tripped() {
+			budget.arm(stepLimit(ctx))
+			recs, more, lastT, lastID, err = readOrdered(ctx, conn, scope.WorkspaceID, q, ks, orderTime)
+		}
 		if err != nil {
-			return err
-		}
-		if strings.Contains(strings.ToUpper(sqlText), "OFFSET") {
-			return ErrStorage
-		}
-		rows, err := conn.QueryContext(ctx, sqlText, append([]any{scope.WorkspaceID}, args...)...)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		recs, more, lastT, lastID, err := collectRows(rows, q.Limit)
-		if err != nil {
-			return err
-		}
-		if err := rows.Close(); err != nil {
 			return err
 		}
 		page.Rows = recs
@@ -242,13 +239,51 @@ func (s *Store) keysetFor(ctx context.Context, conn *sql.Conn, scope model.Scope
 	if body.Epoch != epoch || !s.now().Before(time.UnixMicro(body.Exp).UTC()) {
 		return keyset{}, ErrCursorExpired
 	}
-	if retentionCutoff(s.now()) > body.Cutoff {
-		return keyset{}, ErrCursorExpired
-	}
 	if !filtersMatch(q, body) {
 		return keyset{}, ErrCursorInvalid
 	}
+	crossed, err := s.retentionExcludes(ctx, conn, scope.WorkspaceID, body.Sources, body.Horizon, body.Cutoff)
+	if err != nil {
+		return keyset{}, err
+	}
+	if crossed {
+		return keyset{}, ErrCursorExpired
+	}
 	return keyset{horizon: body.Horizon, cutoff: body.Cutoff, hasLast: body.HasLast, lastT: body.LastT, lastID: body.LastID}, nil
+}
+
+// retentionExcludes reports whether any row still inside the cursor snapshot
+// would disappear under the cutoff at s.now(). The received_at range is the
+// leading predicate so idx_logs_retention can satisfy it.
+func (s *Store) retentionExcludes(ctx context.Context, conn *sql.Conn, workspace string, sources []string, horizon, frozen int64) (bool, error) {
+	current := retentionCutoff(s.now())
+	if current <= frozen {
+		return false, nil
+	}
+	var b strings.Builder
+	b.WriteString(`SELECT 1 FROM logs WHERE received_at >= ? AND received_at < ? AND workspace_id = ? AND ingest_id <= ?`)
+	args := []any{frozen, current, workspace, horizon}
+	if len(sources) > 0 {
+		b.WriteString(` AND source_id IN (`)
+		for i, src := range sources {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('?')
+			args = append(args, src)
+		}
+		b.WriteByte(')')
+	}
+	b.WriteString(` LIMIT 1`)
+	var one int
+	err := conn.QueryRowContext(ctx, b.String(), args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) withReader(ctx context.Context, fn func(context.Context, *sql.Conn, *progressBudget) error) error {
@@ -341,7 +376,36 @@ func scanWatermark(ctx context.Context, conn *sql.Conn) (int64, error) {
 	return id, nil
 }
 
-func buildSearchSQL(q model.Query, ks keyset) (string, []any, error) {
+type joinOrder int
+
+const (
+	orderTime joinOrder = iota
+	orderFTS
+)
+
+func readOrdered(ctx context.Context, conn *sql.Conn, workspace string, q model.Query, ks keyset, order joinOrder) ([]model.Record, bool, int64, int64, error) {
+	sqlText, args, err := buildSearchSQL(q, ks, order)
+	if err != nil {
+		return nil, false, 0, 0, err
+	}
+	if strings.Contains(strings.ToUpper(sqlText), "OFFSET") {
+		return nil, false, 0, 0, ErrStorage
+	}
+	rows, err := conn.QueryContext(ctx, sqlText, append([]any{workspace}, args...)...)
+	if err != nil {
+		return nil, false, 0, 0, err
+	}
+	recs, more, lastT, lastID, err := collectRows(rows, q.Limit)
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, false, 0, 0, err
+	}
+	return recs, more, lastT, lastID, nil
+}
+
+func buildSearchSQL(q model.Query, ks keyset, order joinOrder) (string, []any, error) {
 	from, err := time.Parse(time.RFC3339Nano, q.From)
 	if err != nil {
 		return "", nil, ErrStorage
@@ -351,9 +415,16 @@ func buildSearchSQL(q model.Query, ks keyset) (string, []any, error) {
 		return "", nil, ErrStorage
 	}
 	var b strings.Builder
-	b.WriteString(`SELECT l.ingest_id, l.event_id, l.source_id, l.event_time, l.received_at, l.severity_number, l.severity_text, l.message, l.attributes FROM logs l`)
-	if len(q.Terms) > 0 {
-		b.WriteString(` JOIN logs_fts ON logs_fts.rowid = l.ingest_id`)
+	b.WriteString(`SELECT l.ingest_id, l.event_id, l.source_id, l.event_time, l.received_at, l.severity_number, l.severity_text, l.message, l.attributes FROM `)
+	switch {
+	case len(q.Terms) > 0 && order == orderFTS:
+		// CROSS JOIN keeps logs_fts as the outer table. A plain JOIN lets
+		// SQLite walk the time window and probe FTS once per row.
+		b.WriteString(`logs_fts CROSS JOIN logs l ON logs_fts.rowid = l.ingest_id`)
+	case len(q.Terms) > 0:
+		b.WriteString(`logs l CROSS JOIN logs_fts ON logs_fts.rowid = l.ingest_id`)
+	default:
+		b.WriteString(`logs l`)
 	}
 	b.WriteString(` WHERE l.workspace_id = ?`)
 	args := make([]any, 0, 16)
@@ -511,7 +582,11 @@ func explainSearch(ctx context.Context, s *Store, scope model.Scope, q model.Que
 	if err != nil {
 		return "", err
 	}
-	sqlText, args, err := buildSearchSQL(q, keyset{horizon: wm, cutoff: retentionCutoff(s.now())})
+	order := orderTime
+	if len(q.Terms) > 0 {
+		order = orderFTS
+	}
+	sqlText, args, err := buildSearchSQL(q, keyset{horizon: wm, cutoff: retentionCutoff(s.now())}, order)
 	if err != nil {
 		return "", err
 	}

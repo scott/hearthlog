@@ -134,6 +134,9 @@ func installProgress(c *sqlite3.SQLiteConn) error {
 	return nil
 }
 
+// sqliteDBPtr reads the driver's unexported db field. If a future
+// mattn/go-sqlite3 renames or retypes it, this returns nil and Open fails
+// closed instead of running without a VM-step budget. Keep the module pin.
 func sqliteDBPtr(c *sqlite3.SQLiteConn) unsafe.Pointer {
 	v := reflect.ValueOf(c).Elem().FieldByName("db")
 	if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {

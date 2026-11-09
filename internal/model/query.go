@@ -58,8 +58,18 @@ func ValidateQuery(q Query) error {
 	if len(q.Predicates) > MaxPredicates {
 		return ErrValidation
 	}
+	// Copy before normalizing. Query is passed by value, but the predicate
+	// slice is shared with the caller, and rewriting Value in place races.
+	preds := make([]Predicate, len(q.Predicates))
 	for i := range q.Predicates {
-		if err := validatePredicate(&q.Predicates[i]); err != nil {
+		preds[i] = q.Predicates[i]
+		preds[i].Path = append([]string(nil), q.Predicates[i].Path...)
+		if q.Predicates[i].Value != nil {
+			preds[i].Value = append([]byte(nil), q.Predicates[i].Value...)
+		}
+	}
+	for i := range preds {
+		if err := validatePredicate(&preds[i]); err != nil {
 			return err
 		}
 	}

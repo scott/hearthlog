@@ -8,6 +8,12 @@ import (
 
 var ErrVersionMismatch = errors.New("schema version mismatch")
 
+// logsImmutableTrigger rejects UPDATE. Logs are insert-and-delete only, and
+// there is no FTS update trigger. rank=1 integrity-check compares external content.
+const logsImmutableTrigger = `CREATE TRIGGER IF NOT EXISTS logs_bu BEFORE UPDATE ON logs BEGIN
+	SELECT RAISE(ABORT, 'logs are immutable');
+END`
+
 func (s *Store) migrate(ctx context.Context) error {
 	var ver int
 	if err := s.writer.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver); err != nil {
@@ -67,6 +73,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN
 			INSERT INTO logs_fts(logs_fts, rowid, message) VALUES('delete', old.ingest_id, old.message);
 		END`,
+		logsImmutableTrigger,
 		`CREATE TABLE IF NOT EXISTS receipts (
 			workspace_id TEXT NOT NULL,
 			source_id TEXT NOT NULL,

@@ -44,8 +44,9 @@ func TestBaselineSearch(t *testing.T) {
 		span := 6 * 24 * time.Hour
 		received := frozen.UnixMicro()
 		var last int64
+		step := span / time.Duration(n)
 		for i := 0; i < n; i++ {
-			ev := base.Add(time.Duration(int64(i) * int64(span) / n))
+			ev := base.Add(step * time.Duration(i))
 			msg := fmt.Sprintf("synthetic baseline common %s rare-%d", pad, i%1000)
 			if i >= n-400 {
 				ev = frozen.Add(-5 * time.Minute)
@@ -64,10 +65,7 @@ func TestBaselineSearch(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		if _, err := store.writer.ExecContext(ctx, `ANALYZE`); err != nil {
-			return err
-		}
-		_, err = store.writer.ExecContext(ctx, `INSERT INTO logs_fts(logs_fts) VALUES('integrity-check')`)
+		_, err = store.writer.ExecContext(ctx, `INSERT INTO logs_fts(logs_fts, rank) VALUES('integrity-check', 1)`)
 		return err
 	}); err != nil {
 		t.Fatal(err)
