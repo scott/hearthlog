@@ -26,12 +26,12 @@ func (s *Store) Detail(ctx context.Context, scope model.Scope, id string) (model
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	retentionCutoff := time.Now().UTC().Add(-7 * 24 * time.Hour).UnixMicro()
+	cutoff := retentionCutoff(s.now())
 
 	query := `SELECT ingest_id, event_id, source_id, event_time, received_at, severity_number, severity_text, message, attributes
 		FROM logs
 		WHERE workspace_id = ? AND ingest_id = ? AND received_at >= ?`
-	args := []any{scope.WorkspaceID, idInt, retentionCutoff}
+	args := []any{scope.WorkspaceID, idInt, cutoff}
 	if scope.SourceID != "" {
 		query += ` AND source_id = ?`
 		args = append(args, scope.SourceID)

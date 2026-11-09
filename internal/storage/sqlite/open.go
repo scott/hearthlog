@@ -2,7 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strconv"
@@ -12,6 +14,11 @@ import (
 )
 
 var ErrOpen = errors.New("open failed")
+
+// ErrOlderSlice is returned when the file was written by a slice that has no
+// receipts table. The operator starts a new state directory. There is no
+// in-place upgrade.
+var ErrOlderSlice = errors.New("database is from an older slice and cannot be opened; start the service with a new -state directory")
 
 type Store struct {
 	writer    *sql.DB
@@ -44,6 +51,13 @@ func Open(path string) (*Store, error) {
 	}
 	if err := s.ensureNativeSchema(context.Background()); err != nil {
 		s.Close()
+		if errors.Is(err, ErrOlderSlice) {
+			return nil, ErrOlderSlice
+		}
+		return nil, ErrOpen
+	}
+	if err := s.ensureSearchSchema(context.Background()); err != nil {
+		s.Close()
 		return nil, ErrOpen
 	}
 
@@ -68,7 +82,7 @@ func (s *Store) ensureNativeSchema(ctx context.Context) error {
 		return err
 	}
 	if n != 1 {
-		return ErrVersionMismatch
+		return ErrOlderSlice
 	}
 	var wm string
 	if err := s.writer.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='watermark'`).Scan(&wm); err != nil {
@@ -77,6 +91,36 @@ func (s *Store) ensureNativeSchema(ctx context.Context) error {
 	id, err := strconv.ParseInt(wm, 10, 64)
 	if err != nil || id < 0 {
 		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureSearchSchema(ctx context.Context) error {
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(workspace_id, source_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_time ON logs(workspace_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_ingest ON logs(workspace_id, ingest_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_retention ON logs(received_at, ingest_id)`,
+		logsImmutableTrigger,
+		`INSERT OR IGNORE INTO metadata(key, value) VALUES('cursor_epoch', '1')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.writer.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	var n int
+	if err := s.writer.QueryRowContext(ctx, `SELECT COUNT(*) FROM metadata WHERE key='cursor_mac'`).Scan(&n); err != nil {
+		return err
+	}
+	if n == 0 {
+		var buf [32]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return err
+		}
+		if _, err := s.writer.ExecContext(ctx, `INSERT INTO metadata(key, value) VALUES('cursor_mac', ?)`, hex.EncodeToString(buf[:])); err != nil {
+			return err
+		}
 	}
 	return nil
 }

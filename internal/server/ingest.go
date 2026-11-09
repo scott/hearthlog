@@ -27,7 +27,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Content-Encoding") != "" {
+	if !jsonMedia(r.Header.Get("Content-Type")) || r.Header.Get("Content-Encoding") != "" {
 		skeletonError(w, http.StatusUnsupportedMediaType, "unsupported_media", "Unsupported media type", false)
 		return
 	}

@@ -8,6 +8,12 @@ import (
 
 var ErrVersionMismatch = errors.New("schema version mismatch")
 
+// logsImmutableTrigger rejects UPDATE. Logs are insert-and-delete only, and
+// there is no FTS update trigger. rank=1 integrity-check compares external content.
+const logsImmutableTrigger = `CREATE TRIGGER IF NOT EXISTS logs_bu BEFORE UPDATE ON logs BEGIN
+	SELECT RAISE(ABORT, 'logs are immutable');
+END`
+
 func (s *Store) migrate(ctx context.Context) error {
 	var ver int
 	if err := s.writer.QueryRowContext(ctx, "PRAGMA user_version").Scan(&ver); err != nil {
@@ -51,7 +57,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			FOREIGN KEY (workspace_id, source_id) REFERENCES sources(workspace_id, source_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(workspace_id, source_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_time ON logs(workspace_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_ingest ON logs(workspace_id, ingest_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_received ON logs(workspace_id, source_id, received_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_retention ON logs(received_at, ingest_id)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
 			message,
 			content='logs',
@@ -64,6 +73,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TRIGGER IF NOT EXISTS logs_ad AFTER DELETE ON logs BEGIN
 			INSERT INTO logs_fts(logs_fts, rowid, message) VALUES('delete', old.ingest_id, old.message);
 		END`,
+		logsImmutableTrigger,
 		`CREATE TABLE IF NOT EXISTS receipts (
 			workspace_id TEXT NOT NULL,
 			source_id TEXT NOT NULL,

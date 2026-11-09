@@ -10,6 +10,25 @@ import (
 	"example.invalid/hearthlog/internal/storage/sqlite"
 )
 
+func writeQueryError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, model.ErrUnsupportedPath):
+		safeError(w, http.StatusBadRequest, "unsupported_path", "Unsupported attribute path", false)
+	case errors.Is(err, sqlite.ErrTooBroad):
+		safeError(w, http.StatusUnprocessableEntity, "query_too_broad", "Query too broad", false)
+	case errors.Is(err, sqlite.ErrQueryTimeout):
+		safeError(w, http.StatusGatewayTimeout, "query_timeout", "Query timed out", false)
+	case errors.Is(err, sqlite.ErrCursorExpired):
+		safeError(w, http.StatusGone, "cursor_expired", "Cursor expired", false)
+	case errors.Is(err, sqlite.ErrCursorScope):
+		safeError(w, http.StatusForbidden, "forbidden", "Forbidden", false)
+	case errors.Is(err, sqlite.ErrCursorInvalid), errors.Is(err, model.ErrValidation), errors.Is(err, errForm):
+		safeError(w, http.StatusBadRequest, "invalid_query", "Query validation failed", false)
+	default:
+		safeError(w, http.StatusServiceUnavailable, "storage_unavailable", "Storage unavailable", true)
+	}
+}
+
 func (s *Server) investigateGET(w http.ResponseWriter, r *http.Request) {
 	csrf, ok := s.readSession(r)
 	if !ok {
@@ -34,23 +53,19 @@ func (s *Server) searchPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	q, err := parseQuery(r)
 	if err != nil {
-		safeError(w, http.StatusBadRequest, "invalid_query", "Query validation failed", false)
+		writeQueryError(w, err)
 		return
 	}
-	rows, err := s.store.Search(r.Context(), model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
+	page, err := s.store.ReadPage(r.Context(), model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
 	if err != nil {
-		switch {
-		case errors.Is(err, sqlite.ErrTooBroad):
-			safeError(w, http.StatusUnprocessableEntity, "query_too_broad", "Query too broad", false)
-		default:
-			safeError(w, http.StatusServiceUnavailable, "storage_unavailable", "Storage unavailable", true)
-		}
+		writeQueryError(w, err)
 		return
 	}
 	v := view{
 		CSRF:       csrf,
 		Query:      q,
-		Rows:       rows,
+		Rows:       page.Rows,
+		NextCursor: page.Next,
 		Status:     "Results",
 		Generation: r.PostFormValue("generation"),
 		Sequence:   r.PostFormValue("sequence"),
@@ -73,7 +88,7 @@ func (s *Server) detailPOST(w http.ResponseWriter, r *http.Request) {
 	}
 	q, err := parseQuery(r)
 	if err != nil {
-		safeError(w, http.StatusBadRequest, "invalid_query", "Query validation failed", false)
+		writeQueryError(w, err)
 		return
 	}
 	idStr := r.PostFormValue("id")

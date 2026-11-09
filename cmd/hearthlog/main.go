@@ -70,7 +70,8 @@ func main() {
 	dbPath := filepath.Join(abs, "hearthlog.db")
 	store, err := sqlite.Open(dbPath)
 	if err != nil {
-		fatal("db open")
+		logOpenFailure(slog.Default(), err)
+		os.Exit(1)
 	}
 	defer store.Close()
 
@@ -155,6 +156,14 @@ func loadOrCreateToken(path string) (string, error) {
 		return "", err
 	}
 	return tok, nil
+}
+
+func logOpenFailure(logger *slog.Logger, err error) {
+	if errors.Is(err, sqlite.ErrOlderSlice) {
+		logger.Error("database is from an older slice and cannot be opened; start the service with a new -state directory")
+		return
+	}
+	logger.Error("fatal", "msg", "db open")
 }
 
 func fatal(msg string) {
