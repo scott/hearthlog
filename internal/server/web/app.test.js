@@ -420,3 +420,241 @@ test('submit disables the submitter after the turn', () => {
   assert.strictEqual(clicked.busy, true);
   assert.strictEqual(first.disabled, false);
 });
+
+function liveEnv() {
+  const elements = {};
+  const listeners = { capture: {}, bubble: {} };
+  const htmxListeners = {};
+  const processed = [];
+  function walk(n, fn) {
+    for (const c of n.children || []) {
+      fn(c);
+      walk(c, fn);
+    }
+  }
+  function match(n, sel) {
+    if (sel === 'li') return n.tag === 'li';
+    if (sel === '#live-batch') return n.id === 'live-batch';
+    if (sel === '.live-filter') return n.className === 'live-filter';
+    const idm = /^li\[data-ingest-id="([0-9]+)"\]$/.exec(sel);
+    if (idm) return n.tag === 'li' && n.attrs['data-ingest-id'] === idm[1];
+    const named = /^input\[name=(.+)\]$/.exec(sel);
+    if (named) return n.tag === 'input' && n.name === named[1];
+    const selected = /^select\[name=(.+)\]$/.exec(sel);
+    if (selected) return n.tag === 'select' && n.name === selected[1];
+    return false;
+  }
+  function make(tag, id) {
+    const node = {
+      tag, id: id || '', hidden: false, value: '', textContent: '', className: '',
+      type: '', name: '', scrollTop: 0, children: [], parent: null, attrs: {}, options: [],
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      appendChild(child) {
+        if (child.parent) child.parent.removeChild(child);
+        child.parent = this;
+        this.children.push(child);
+        if (child.id) elements[child.id] = child;
+        return child;
+      },
+      insertBefore(child, ref) {
+        if (child.parent) child.parent.removeChild(child);
+        child.parent = this;
+        const at = ref ? this.children.indexOf(ref) : 0;
+        this.children.splice(at < 0 ? this.children.length : at, 0, child);
+        if (child.id) elements[child.id] = child;
+        return child;
+      },
+      removeChild(child) {
+        const at = this.children.indexOf(child);
+        if (at >= 0) this.children.splice(at, 1);
+        if (child.parent === this) child.parent = null;
+        return child;
+      },
+      remove() {
+        if (this.parent) this.parent.removeChild(this);
+        if (this.id && elements[this.id] === this) delete elements[this.id];
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        walk(this, (n) => { if (match(n, sel)) out.push(n); });
+        return out;
+      },
+      focus() { this.focused = (this.focused || 0) + 1; }
+    };
+    Object.defineProperty(node, 'firstChild', { get() { return this.children[0] || null; } });
+    Object.defineProperty(node, 'lastChild', { get() { return this.children[this.children.length - 1] || null; } });
+    Object.defineProperty(node, 'innerHTML', {
+      get() { return ''; },
+      set(v) { if (v === '') this.children.length = 0; }
+    });
+    if (node.id) elements[node.id] = node;
+    return node;
+  }
+  const panel = make('section', 'live-panel');
+  const status = make('p', 'live-status');
+  const rows = make('ul', 'live-rows');
+  const incoming = make('div', 'live-incoming');
+  const form = make('form', 'live-form');
+  const filters = make('form', 'filters');
+  const client = make('input', 'live-client');
+  const gen = make('input', 'live-gen');
+  gen.value = '1';
+  make('input', 'live-cursor-received').value = '0';
+  make('input', 'live-cursor-id').value = '0';
+  make('input', 'live-severity').value = '1';
+  const pause = make('button', 'btn-live-pause');
+  pause.hidden = true;
+  const resume = make('button', 'btn-live-resume');
+  resume.hidden = true;
+  make('button', 'btn-live-reconnect').hidden = true;
+  make('button', 'btn-live-start');
+  make('a', 'btn-search-gap').hidden = true;
+  make('div', 'live-ack');
+  panel.appendChild(status);
+  panel.appendChild(form);
+  panel.appendChild(rows);
+  panel.appendChild(incoming);
+  const doc = {
+    visibilityState: 'visible',
+    getElementById: (id) => elements[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: (tag) => make(tag, ''),
+    addEventListener(ev, cb, capture) {
+      const bag = capture ? listeners.capture : listeners.bubble;
+      (bag[ev] = bag[ev] || []).push(cb);
+    }
+  };
+  const sandbox = {
+    document: doc,
+    window: { addEventListener() {}, location: { origin: 'http://localhost:8080' } },
+    htmx: {
+      on: (ev, cb) => { htmxListeners[ev] = cb; },
+      process: (node) => { processed.push(node); },
+      remove: (node) => { if (node && node.remove) node.remove(); }
+    },
+    WeakMap, WeakSet, URL, Uint8Array,
+    location: { origin: 'http://localhost:8080' },
+    console: { log() {} },
+    crypto: { getRandomValues(buf) { for (let i = 0; i < buf.length; i++) buf[i] = i + 1; return buf; } },
+    setTimeout(fn) { sandbox.timers.push(fn); return sandbox.timers.length; },
+    clearTimeout() {}
+  };
+  sandbox.timers = [];
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), sandbox);
+  function fire(ev, target) {
+    const e = { target, preventDefault() { e.defaultPrevented = true; } };
+    for (const cb of listeners.capture[ev] || []) cb(e);
+    for (const cb of listeners.bubble[ev] || []) cb(e);
+    return e;
+  }
+  function xhr(headers) {
+    return {
+      status: 200,
+      responseURL: 'http://localhost:8080/investigate/live',
+      headers: Object.assign({ 'Content-Type': 'text/html', 'X-Live-Gen': gen.value }, headers || {}),
+      getResponseHeader(name) { return this.headers[name] || ''; },
+      abort() { this.aborted = true; }
+    };
+  }
+  function request(path, intent, req) {
+    let prevented = false;
+    htmxListeners['htmx:configRequest']({
+      detail: { path, parameters: { intent } },
+      preventDefault() { prevented = true; }
+    });
+    htmxListeners['htmx:beforeRequest']({
+      detail: { xhr: req, requestConfig: { path, parameters: { intent } } },
+      preventDefault() { prevented = true; }
+    });
+    return prevented;
+  }
+  function batch(ids, idle, cursor) {
+    incoming.innerHTML = '';
+    const root = make('div', 'live-batch');
+    root.setAttribute('data-cursor-received', cursor.recv);
+    root.setAttribute('data-cursor-id', cursor.id);
+    root.setAttribute('data-idle', idle ? '1' : '0');
+    const ul = make('ul', '');
+    root.appendChild(ul);
+    for (const id of ids) {
+      const li = make('li', '');
+      li.setAttribute('data-ingest-id', String(id));
+      ul.appendChild(li);
+    }
+    incoming.appendChild(root);
+  }
+  return { elements, doc, htmxListeners, processed, fire, sandbox, rows, status, pause, resume, client, gen, incoming, filters, form, xhr, request, batch };
+}
+
+test('live polling backs off, pauses, dedups and prunes', () => {
+  const env = liveEnv();
+  assert.strictEqual(env.client.value.length, 16);
+  env.fire('click', env.elements['btn-live-start']);
+  const start = env.xhr();
+  assert.strictEqual(env.request('/investigate/live', 'start', start), false);
+  env.elements['live-ack'].textContent = 'Live: Receiving';
+  env.elements['live-ack'].setAttribute('data-state', 'receiving');
+  env.elements['live-ack'].setAttribute('data-cursor-received', '100');
+  env.elements['live-ack'].setAttribute('data-cursor-id', '9');
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: start, target: { id: 'live-ack' } } });
+  const trig = env.elements['live-trigger'];
+  assert.ok(trig, 'trigger mounted');
+  assert.strictEqual(trig.getAttribute('hx-trigger'), 'every 1000ms');
+  assert.strictEqual(trig.getAttribute('hx-sync'), '#live-trigger:drop');
+  assert.strictEqual(trig.getAttribute('hx-vals'), '{"intent":"poll"}');
+  assert.strictEqual(env.status.textContent, 'Live: Receiving');
+
+  env.batch([7, 7], false, { recv: '100', id: '11' });
+  const one = env.xhr({ 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '11', 'X-Live-Idle': '0' });
+  assert.strictEqual(env.request('/investigate/live', 'poll', one), false);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: one, target: { id: 'live-incoming' } } });
+  assert.strictEqual(env.rows.children.length, 1);
+  assert.strictEqual(env.elements['live-cursor-id'].value, '11');
+
+  env.rows.children.length = 0;
+  const ids = [];
+  for (let n = 1; n <= 1005; n++) ids.push(n);
+  env.batch(ids, false, { recv: '100', id: '2000' });
+  const many = env.xhr({ 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2000', 'X-Live-Idle': '0' });
+  env.request('/investigate/live', 'poll', many);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: many, target: { id: 'live-incoming' } } });
+  assert.strictEqual(env.rows.children.length, 1000);
+  assert.strictEqual(env.rows.firstChild.getAttribute('data-ingest-id'), '1005');
+  assert.strictEqual(env.rows.lastChild.getAttribute('data-ingest-id'), '6');
+
+  env.batch([], true, { recv: '100', id: '2000' });
+  const idle = env.xhr({ 'X-Live-Idle': '1', 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2000' });
+  env.request('/investigate/live', 'poll', idle);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: idle, target: { id: 'live-incoming' } } });
+  assert.strictEqual(env.elements['live-trigger'].getAttribute('hx-trigger'), 'every 2000ms');
+
+  env.doc.visibilityState = 'hidden';
+  env.fire('visibilitychange', env.doc);
+  assert.strictEqual(env.elements['live-trigger'], undefined);
+  assert.strictEqual(env.status.textContent, 'Live: Paused');
+  env.doc.visibilityState = 'visible';
+  env.fire('visibilitychange', env.doc);
+  assert.ok(env.elements['live-trigger'].getAttribute('hx-vals').includes('resume'));
+  env.batch([1006], false, { recv: '100', id: '2001' });
+  const back = env.xhr({ 'X-Live-Idle': '0', 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2001' });
+  env.request('/investigate/live', 'resume', back);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: back, target: { id: 'live-incoming' } } });
+  assert.strictEqual(env.elements['live-trigger'].getAttribute('hx-vals'), '{"intent":"poll"}');
+
+  env.rows.scrollTop = 40;
+  env.fire('scroll', env.rows);
+  assert.strictEqual(env.elements['live-trigger'], undefined);
+  assert.strictEqual(env.status.textContent, 'Live: Paused');
+  env.rows.scrollTop = 0;
+  env.fire('scroll', env.rows);
+  assert.ok(env.elements['live-trigger']);
+  env.fire('click', env.elements['btn-live-pause']);
+  assert.strictEqual(env.status.textContent, 'Live: Paused');
+  assert.strictEqual(env.pause.hidden, true);
+  assert.strictEqual(env.resume.hidden, false);
+  assert.strictEqual(env.elements['live-trigger'], undefined);
+});

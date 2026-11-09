@@ -228,7 +228,11 @@ func TestBrowserE2E(t *testing.T) {
 	if !ok {
 		t.Fatal("caller")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	limit := 3 * time.Minute
+	if os.Getenv("E2E_SHOT_DIR") != "" {
+		limit = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(file), "browser_e2e.js"))
 	cmd.Env = append(os.Environ(),
@@ -272,6 +276,39 @@ func TestBrowserE2E(t *testing.T) {
 			}
 		case "NEED_CLOCK reset":
 			setClock(S)
+			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
+				t.Fatal(err)
+			}
+		case "NEED_LIVE":
+			for i := 0; i < 12; i++ {
+				if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9000+i, S, "synthetic live arrived", `{"k":1}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
+				t.Fatal(err)
+			}
+		case "NEED_LIVE_HOLD":
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9100, S, "synthetic live while paused", `{"k":1}`)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
+				t.Fatal(err)
+			}
+		case "NEED_GAP":
+			for b := 0; b < 25; b++ {
+				batch := nativeEvents(t, 9200+b, 200, S, "synthetic gap row", `{"k":1}`)
+				raw, err := json.Marshal(batch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.CommitNative(context.Background(), scope, batch, len(raw)); err != nil {
+					t.Fatalf("gap batch %d: %v", b, err)
+				}
+			}
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9299, S, "synthetic gap row", `{"k":1}`)); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
 				t.Fatal(err)
 			}

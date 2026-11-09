@@ -263,6 +263,9 @@ async function diag(send, session) {
         preset: (document.getElementById('time-select') || {}).value || '',
         from: (document.getElementById('f-from') || {}).value || '',
         status: (document.getElementById('status') || {}).textContent || '',
+        live: (document.getElementById('live-status') || {}).textContent || '',
+        liveRows: document.querySelectorAll('#live-rows li').length,
+        liveTrigger: !!document.getElementById('live-trigger'),
         generation: gens,
         sequence: seqs,
         activeHTML: a ? a.outerHTML : ''
@@ -315,10 +318,26 @@ async function clickId(send, session, id) {
 }
 
 async function shot(send, session, name) {
+  await shotOf(send, session, name, '#status');
+}
+
+async function shotOf(send, session, name, sel) {
   if (!SHOT_DIR) return;
-  await ev(send, session, `document.getElementById('status') && document.getElementById('status').scrollIntoView({block:'center'})`);
+  await ev(send, session, `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el && el.scrollIntoView) el.scrollIntoView({block:'center'}); })()`);
   const r = await send('Page.captureScreenshot', { format: 'png' }, session);
   fs.writeFileSync(path.join(SHOT_DIR, name), Buffer.from(r.data, 'base64'));
+}
+
+async function boxWidth(send, session, width) {
+  await metrics(send, session, width, 800, width < 500);
+  const raw = await ev(send, session, `(() => {
+    const d = document.documentElement;
+    const b = document.body;
+    return JSON.stringify({width:${width}, client:d.clientWidth, scroll:Math.max(d.scrollWidth, b.scrollWidth)});
+  })()`);
+  const box = JSON.parse(raw);
+  if (box.scroll > box.client + 1) throw new Error('sideways scroll at ' + width + ' ' + raw);
+  return box;
 }
 
 async function login(send, session) {
@@ -599,6 +618,112 @@ async function main() {
 
     say('NEED_CLOCK reset');
     await nextLine();
+
+    say('STEP live');
+    await waitIdle(send, session);
+    await ev(send, session, `(() => {
+      document.getElementById('time-select').value = '15m';
+      document.getElementById('severity-select').value = '1';
+      document.getElementById('msg-term-1').value = '';
+      const pred = document.getElementById('pred-1');
+      if (pred) pred.value = '';
+      const pval = document.querySelector('#filters input[name=pval]');
+      if (pval) pval.value = '';
+      const src = document.getElementById('source-select');
+      for (const opt of src.options) opt.selected = opt.value === 'src_demo_api';
+    })()`);
+    await clickId(send, session, 'btn-live-start');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Receiving') return '';
+      if (!document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`, 10000);
+    say('NEED_LIVE');
+    await nextLine();
+    await waitFn(send, session, `document.querySelectorAll('#live-rows li').length >= 12 && document.getElementById('live-rows').textContent.includes('synthetic live arrived') ? 'yes' : ''`, 12000);
+    const dupes = await ev(send, session, `(() => {
+      const ids = [...document.querySelectorAll('#live-rows li')].map((el) => el.getAttribute('data-ingest-id'));
+      return new Set(ids).size === ids.length ? 'ok' : 'dup';
+    })()`);
+    if (dupes !== 'ok') throw new Error('live rows duplicated');
+    const scrollState = await ev(send, session, `(() => {
+      const rows = document.getElementById('live-rows');
+      if (!rows || rows.scrollHeight <= rows.clientHeight + 1) return 'short';
+      rows.scrollTop = rows.scrollHeight;
+      rows.dispatchEvent(new Event('scroll', { bubbles: false }));
+      return document.getElementById('live-trigger') ? 'still' : 'paused';
+    })()`);
+    say('live-scroll ' + scrollState);
+    if (scrollState === 'short') throw new Error('live rows did not overflow');
+    if (scrollState === 'still') throw new Error('scroll did not pause polling');
+    if (scrollState === 'paused') {
+      await ev(send, session, `(() => {
+        const rows = document.getElementById('live-rows');
+        rows.scrollTop = 0;
+        rows.dispatchEvent(new Event('scroll', { bubbles: false }));
+      })()`);
+      await waitFn(send, session, `document.getElementById('live-trigger') && document.getElementById('live-status').textContent === 'Live: Receiving' ? 'yes' : ''`);
+    }
+    if (SHOT_DIR) {
+      await shotOf(send, session, 'live-receiving-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-receiving-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    await clickId(send, session, 'btn-live-pause');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Paused') return '';
+      if (document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`);
+    if (SHOT_DIR) {
+      await shotOf(send, session, 'live-paused-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-paused-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    say('NEED_LIVE_HOLD');
+    await nextLine();
+    await sleep(1200);
+    const held = await ev(send, session, `document.getElementById('live-rows').textContent.includes('synthetic live while paused') ? 'shown' : 'hidden'`);
+    if (held !== 'hidden') throw new Error('paused live showed a new row');
+    await clickId(send, session, 'btn-live-resume');
+    await waitFn(send, session, `document.getElementById('live-rows').textContent.includes('synthetic live while paused') ? 'yes' : ''`, 12000);
+    await clickId(send, session, 'btn-live-pause');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Paused') return '';
+      if (document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`);
+    if (SHOT_DIR) {
+      say('NEED_GAP');
+      await nextLine();
+      await clickId(send, session, 'btn-live-resume');
+      await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Gap detected' ? 'yes' : ''`, 15000);
+      await shotOf(send, session, 'live-gap-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-gap-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+      await ev(send, session, `document.getElementById('live-cursor-received').value = 'nope'`);
+      await clickId(send, session, 'btn-live-resume');
+      await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Query invalid' ? 'yes' : ''`, 10000);
+      await shotOf(send, session, 'live-error-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-error-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    const widths = [];
+    widths.push(await boxWidth(send, session, 1280));
+    widths.push(await boxWidth(send, session, 390));
+    widths.push(await boxWidth(send, session, 360));
+    await metrics(send, session, 1280, 900, false);
+    if (SHOT_DIR) fs.writeFileSync(path.join(SHOT_DIR, 'scroll.json'), JSON.stringify(widths, null, 2));
 
     say('STEP no-js');
     const off = await newSession(send, { disableJS: true });

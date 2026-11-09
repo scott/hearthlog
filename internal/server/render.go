@@ -86,6 +86,11 @@ type view struct {
 	NoEvents        bool
 	SuppressResults bool
 	Partial         bool
+	LiveStatus      string
+	LiveState       string
+	LiveReceived    string
+	LiveIngest      string
+	LiveIdle        bool
 }
 
 // beforeRender runs at the start of render when a test installs it.
