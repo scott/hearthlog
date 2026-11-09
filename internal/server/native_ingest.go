@@ -20,7 +20,7 @@ func (s *Server) nativeIngest(w http.ResponseWriter, r *http.Request) {
 		safeError(w, http.StatusUnauthorized, "unauthenticated", "Authentication required", false)
 		return
 	}
-	if r.Header.Get("Content-Type") != "application/json" {
+	if !jsonMedia(r.Header.Get("Content-Type")) {
 		safeError(w, http.StatusUnsupportedMediaType, "unsupported_media", "Unsupported media type", false)
 		return
 	}

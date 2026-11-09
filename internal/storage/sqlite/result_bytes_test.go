@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"example.invalid/hearthlog/internal/model"
 )
@@ -12,6 +13,8 @@ import (
 func TestResultBytesBound(t *testing.T) {
 	t.Parallel()
 	store, _ := freshStore(t)
+	frozen := time.Now().UTC().Truncate(time.Minute).Add(30 * time.Second)
+	store.clock.Store(func() time.Time { return frozen })
 	ctx := context.Background()
 
 	// Seed 120 events with 16384-byte ASCII messages (below raw cap per event)
@@ -33,24 +36,20 @@ func TestResultBytesBound(t *testing.T) {
 	q.Sources = []string{"src_demo_api"}
 	q.Limit = 200
 
-	// Positive: 120 rows should fit under 2MiB
-	rows, err := store.Search(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
+	// One page stays within the byte cap. A full match set that does not fit
+	// continues through the keyset cursor.
+	page, err := store.ReadPage(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
 	if err != nil {
 		t.Fatalf("search positive: %v", err)
 	}
-	if len(rows) != 120 {
-		t.Fatalf("expected 120 rows, got %d", len(rows))
+	if len(page.Rows) == 0 || len(page.Rows) > 120 {
+		t.Fatalf("page rows %d", len(page.Rows))
 	}
-	total := 0
-	for _, r := range rows {
-		total += len(r.Message) + len(r.Attributes) + len(r.EventID) + len(r.IngestID) + len(r.SourceID) + len(r.EventTime) + len(r.ReceivedAt) + len(r.SeverityText) + 256
+	if pageBytes(page.Rows) > model.MaxResultBytes {
+		t.Fatalf("page bytes exceed cap")
 	}
-	if total > model.MaxResultBytes {
-		t.Fatalf("measured %d exceeds cap %d", total, model.MaxResultBytes)
-	}
-	t.Logf("measured bytes: %d", total)
 
-	// Seed 30 more events to exceed cap (150 total)
+	// Seed 30 more events (150 total).
 	for i := 120; i < 150; i++ {
 		b := negativeBatch(t, 1, msg)
 		b.BatchID = fmt.Sprintf("%08x-0000-4000-8000-%012d", i, i)
@@ -60,22 +59,54 @@ func TestResultBytesBound(t *testing.T) {
 		}
 	}
 
-	// Negative: 150 rows should exceed cap
-	rows2, err2 := store.Search(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
-	if err2 != ErrTooBroad {
-		t.Fatalf("expected ErrTooBroad, got %v", err2)
+	seen := map[string]struct{}{}
+	pages := 0
+	for {
+		page, err = store.ReadPage(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
+		if err != nil {
+			t.Fatalf("page: %v", err)
+		}
+		if len(page.Rows) == 0 {
+			t.Fatal("empty page")
+		}
+		if pageBytes(page.Rows) > model.MaxResultBytes {
+			t.Fatalf("page bytes %d", pageBytes(page.Rows))
+		}
+		for _, r := range page.Rows {
+			if _, ok := seen[r.IngestID]; ok {
+				t.Fatalf("duplicate %s", r.IngestID)
+			}
+			seen[r.IngestID] = struct{}{}
+		}
+		pages++
+		if page.Next == "" {
+			break
+		}
+		q.Cursor = page.Next
+		if pages > 10 {
+			t.Fatal("too many pages")
+		}
 	}
-	if rows2 != nil {
-		t.Fatalf("expected nil rows, got %d", len(rows2))
+	if len(seen) != 150 {
+		t.Fatalf("paged %d rows", len(seen))
 	}
+	if pages < 2 {
+		t.Fatal("expected more than one page")
+	}
+	t.Logf("pages=%d", pages)
 
-	// Extra: limit 1 with multiple matching events must return ErrTooBroad
 	q.Limit = 1
-	rows3, err3 := store.Search(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
-	if err3 != ErrTooBroad {
-		t.Fatalf("expected ErrTooBroad with limit 1, got %v", err3)
+	q.Cursor = ""
+	one, err := store.ReadPage(ctx, model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}, q)
+	if err != nil || len(one.Rows) != 1 || one.Next == "" {
+		t.Fatalf("limit 1 page: n=%d err=%v next=%t", len(one.Rows), err, one.Next != "")
 	}
-	if rows3 != nil {
-		t.Fatalf("expected nil rows with limit 1, got %d", len(rows3))
+}
+
+func pageBytes(rows []model.Record) int {
+	total := 0
+	for _, r := range rows {
+		total += len(r.Message) + len(r.Attributes) + len(r.EventID) + len(r.IngestID) + len(r.SourceID) + len(r.EventTime) + len(r.ReceivedAt) + len(r.SeverityText) + 1024
 	}
+	return total
 }

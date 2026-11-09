@@ -20,5 +20,12 @@
 {{else}}
 <p class="no-results">No matching events</p>
 {{end}}
+{{if .NextCursor}}
+<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+{{template "context" $}}
+<input type="hidden" name="cursor" value="{{.NextCursor}}">
+<button type="submit" id="btn-next">Next page</button>
+</form>
+{{end}}
 </div>
 {{end}}

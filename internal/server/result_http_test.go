@@ -15,7 +15,7 @@ func TestResultHTTPBytes(t *testing.T) {
 		overflow bool
 	}{
 		{"below", 80, 8192, false},
-		{"rawoverflow", 150, 16384, true},
+		{"rawoverflow", 150, 16384, false},
 		{"escapeoverflow", 150, 4096, true},
 	}
 
@@ -47,7 +47,12 @@ func TestResultHTTPBytes(t *testing.T) {
 			code, hdr, body := postForm(t, client, origin, "/investigate/search", resultForm(csrf, q), false)
 			checkResultBudget(t, code, hdr, body, tc.overflow)
 			if !tc.overflow {
-				if got := strings.Count(string(body), `data-ingest-id=`); got != tc.count {
+				got := strings.Count(string(body), `data-ingest-id=`)
+				if tc.name == "rawoverflow" {
+					if got < 1 || got >= tc.count || !strings.Contains(string(body), `id="btn-next"`) {
+						t.Fatalf("bounded page rows %d next=%t", got, strings.Contains(string(body), `id="btn-next"`))
+					}
+				} else if got != tc.count {
 					t.Fatalf("full page rows %d want %d", got, tc.count)
 				}
 			}
@@ -55,7 +60,12 @@ func TestResultHTTPBytes(t *testing.T) {
 			code2, hdr2, body2 := postForm(t, client, origin, "/investigate/search", resultForm(csrf, q), true)
 			checkResultBudget(t, code2, hdr2, body2, tc.overflow)
 			if !tc.overflow {
-				if got := strings.Count(string(body2), `data-ingest-id=`); got != tc.count {
+				got := strings.Count(string(body2), `data-ingest-id=`)
+				if tc.name == "rawoverflow" {
+					if got < 1 || got >= tc.count {
+						t.Fatalf("hx bounded rows %d", got)
+					}
+				} else if got != tc.count {
 					t.Fatalf("hx rows %d want %d", got, tc.count)
 				}
 			}

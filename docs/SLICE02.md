@@ -59,6 +59,8 @@ gitleaks git --pre-commit --staged --redact --no-banner
 
 ## Run
 
+A state directory created before the receipts schema cannot be opened. The process logs `database is from an older slice and cannot be opened; start the service with a new -state directory` and exits. There is no in-place upgrade. Point `-state` at a new directory. A Slice 04 database (`user_version` 1, with receipts) still opens; missing search indexes are created on startup.
+
 ```bash
 # Start server (generates read.token/write.token 0600 in STATE_DIR)
 "$BUILD_DIR/hearthlog" -state "$STATE_DIR" -listen 127.0.0.1:8787 &

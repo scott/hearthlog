@@ -47,7 +47,7 @@ func (s *Server) form(w http.ResponseWriter, r *http.Request) (string, bool) {
 	allowed := map[string]bool{
 		"csrf": true, "source": true, "from": true, "to": true,
 		"severity": true, "term": true, "id": true, "generation": true,
-		"sequence": true, "origin": true,
+		"sequence": true, "origin": true, "cursor": true,
 	}
 	for k := range r.PostForm {
 		if !allowed[k] {
@@ -125,8 +125,10 @@ func parseQuery(r *http.Request) (model.Query, error) {
 		q.Limit = n
 	}
 
+	q.Cursor = r.PostFormValue("cursor")
+
 	if err := model.ValidateQuery(q); err != nil {
-		return q, errForm
+		return q, err
 	}
 	return q, nil
 }

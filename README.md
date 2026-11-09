@@ -18,6 +18,11 @@ SQLite intentionally keeps a low-volume single-node MVP simple. PostgreSQL can b
 - [Slice 02 scope notes](docs/SLICE02-SCOPE.md)
 - [Go slog SDK integration guide (Slice 03)](docs/SDK.md) and [evidence](docs/evidence/SLICE03.md)
 - [Slice 04 single-writer replay evidence](docs/evidence/SLICE04.md)
+- [Slice 05 search and keyset cursor evidence](docs/evidence/SLICE05.md)
+
+A database written before the receipts schema will not open. The process logs that the database is from an older slice and exits. Start it with a new `-state` directory. There is no in-place upgrade from that older file. A Slice 04 database still opens, and missing search indexes are created on startup.
+
+The HTTP server admits at most 64 in-flight requests. The writer queue separately admits at most 64 jobs and 16MiB. Ingest takes an HTTP slot and then a writer-queue slot. A full HTTP limit returns 503 before the writer queue sees the request. Search uses a reader and does not enter the writer queue.
 
 The final twelve-slice deliverable must include a versioned binary for declared tested targets, reproducible build and checksum verification, generic deployment/upgrade/backup/recovery instructions, and a compilable synthetic service-integration guide. Fresh installation and demo-service search/Live/restart persistence must be proven using only those instructions. This is planned acceptance, not an available release or universal static binary claim.
 

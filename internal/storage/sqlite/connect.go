@@ -33,15 +33,17 @@ func connect(dsn string, read bool) (*sql.DB, error) {
 
 	u.RawQuery = params.Encode()
 
-	db, err := sql.Open("sqlite3", u.String())
+	db, err := sql.Open(sqliteDriver, u.String())
 	if err != nil {
 		return nil, err
 	}
 
 	if read {
-		db.SetMaxOpenConns(4)
+		db.SetMaxOpenConns(maxReaders)
+		db.SetMaxIdleConns(maxReaders)
 	} else {
 		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

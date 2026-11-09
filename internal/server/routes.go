@@ -6,7 +6,13 @@ import (
 	"time"
 )
 
+// maxConcurrent is the HTTP in-flight limit. It is a separate layer from the
+// writer queue, which admits at most 64 jobs and 16MiB. Ingest takes an HTTP
+// slot and then a writer-queue slot. A full HTTP limit returns 503 before
+// writer admission runs. Searches do not enter the writer queue.
 const maxConcurrent = 64
+
+const httpTimeout = 5 * time.Second
 
 var sem64 = make(chan struct{}, maxConcurrent)
 
@@ -40,7 +46,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), httpTimeout)
 	defer cancel()
 	r = r.WithContext(ctx)
 

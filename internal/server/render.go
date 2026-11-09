@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"example.invalid/hearthlog/internal/model"
 )
@@ -25,6 +26,7 @@ type view struct {
 	CSRF       string
 	Query      model.Query
 	Rows       []model.Record
+	NextCursor string
 	Detail     *model.Record
 	Status     string
 	Generation string
@@ -33,7 +35,13 @@ type view struct {
 	OriginID   string
 }
 
+// beforeRender runs at the start of render when a test installs it.
+var beforeRender atomic.Value
+
 func (s *Server) render(w http.ResponseWriter, r *http.Request, kind string, v view, status int) {
+	if fn, ok := beforeRender.Load().(func()); ok && fn != nil {
+		fn()
+	}
 	name := "page"
 	if r.Header.Get("HX-Request") == "true" {
 		name = kind

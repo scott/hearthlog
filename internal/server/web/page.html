@@ -13,7 +13,7 @@
 </head>
 <body>
 <a class="skiplink" href="#investigation">Skip to main content</a>
-<header><h1>Hearthlog</h1><p class="banner">Walking skeleton. No Live, filtering, or pagination.</p></header>
+<header><h1>Hearthlog</h1><p class="banner">Walking skeleton. Historical pages use a signed cursor. No Live.</p></header>
 <main id="investigation" tabindex="-1" hx-sync="#investigation:replace">
 <form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

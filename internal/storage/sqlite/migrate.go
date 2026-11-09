@@ -51,7 +51,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			FOREIGN KEY (workspace_id, source_id) REFERENCES sources(workspace_id, source_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(workspace_id, source_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_time ON logs(workspace_id, event_time DESC, ingest_id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_ws_ingest ON logs(workspace_id, ingest_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_received ON logs(workspace_id, source_id, received_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_logs_retention ON logs(received_at, ingest_id)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
 			message,
 			content='logs',

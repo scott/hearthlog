@@ -56,14 +56,25 @@ type Receipt struct {
 	ReceivedAt    string `json:"received_at"`
 }
 
-// Query params for scoped FTS search.
+// Predicate is one typed attribute comparison. Op is "eq" or "missing".
+// Type is null, boolean, integer, real, or string. Missing carries no type or value.
+type Predicate struct {
+	Path  []string        `json:"path"`
+	Op    string          `json:"op"`
+	Type  string          `json:"type,omitempty"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// Query params for scoped FTS search. Cursor is an opaque signed page token.
 type Query struct {
-	Sources     []string `json:"sources"`
-	From        string   `json:"from"`
-	To          string   `json:"to"`
-	MinSeverity int      `json:"min_severity"`
-	Terms       []string `json:"terms"`
-	Limit       int      `json:"limit"`
+	Sources     []string    `json:"sources"`
+	From        string      `json:"from"`
+	To          string      `json:"to"`
+	MinSeverity int         `json:"min_severity"`
+	Terms       []string    `json:"terms"`
+	Predicates  []Predicate `json:"predicates,omitempty"`
+	Limit       int         `json:"limit"`
+	Cursor      string      `json:"cursor,omitempty"`
 }
 
 // MaxResultBytes is the cumulative materialization budget for search results.

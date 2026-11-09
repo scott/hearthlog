@@ -249,8 +249,12 @@ func TestSchemaWithoutReceiptsRefused(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); !errors.Is(err, ErrOpen) {
+	_, err = Open(path)
+	if !errors.Is(err, ErrOlderSlice) {
 		t.Fatalf("open old schema: %v", err)
+	}
+	if err.Error() != "database is from an older slice and cannot be opened; start the service with a new -state directory" {
+		t.Fatalf("open message: %v", err)
 	}
 }
 
