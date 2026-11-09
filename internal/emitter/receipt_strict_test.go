@@ -111,7 +111,7 @@ func TestReceiptStrictJSON(t *testing.T) {
 				if errors.Is(closeErr, context.DeadlineExceeded) || errors.Is(closeErr, context.Canceled) {
 					t.Errorf("Close: context error, want validation error")
 				}
-				if got := h.state.sent.Load(); got != 0 {
+				if got := h.Stats().SentBatches; got != 0 {
 					t.Errorf("sent = %d, want 0", got)
 				}
 			} else {
@@ -121,7 +121,7 @@ func TestReceiptStrictJSON(t *testing.T) {
 				if closeErr != nil {
 					t.Errorf("Close: unexpected error: %v", closeErr)
 				}
-				if got := h.state.sent.Load(); got != 1 {
+				if got := h.Stats().SentBatches; got != 1 {
 					t.Errorf("sent = %d, want 1", got)
 				}
 			}

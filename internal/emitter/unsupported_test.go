@@ -14,10 +14,32 @@ import (
 	"example.invalid/hearthlog/internal/model"
 )
 
-func TestUnsupportedEndpointRejectsCanonicalV1(t *testing.T) {
-	_, err := New("http://127.0.0.1:8080/api/v1/batches", "test-token", nil)
-	if err == nil {
-		t.Fatal("New: expected error for canonical v1 path, got nil")
+// The endpoint path selects the envelope. The canonical native route is a
+// valid SDK target (Slice 03), even though this repository's server keeps it
+// unavailable until Slice 04; any other path is rejected.
+func TestEndpointPathSelectsProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		ok     bool
+		native bool
+	}{
+		{"/api/v1/batches", true, true},
+		{"/api/experimental/skeleton/batches", true, false},
+		{"/api/v2/batches", false, false},
+		{"/api/v1/batches/", false, false},
+		{"/", false, false},
+	} {
+		h, err := New("http://127.0.0.1:8080"+tc.path, "test-token", nil)
+		if (err == nil) != tc.ok {
+			t.Fatalf("New(%q): err=%v, want ok=%v", tc.path, err, tc.ok)
+		}
+		if err != nil {
+			continue
+		}
+		if h.state.native != tc.native {
+			t.Fatalf("New(%q): native=%v want %v", tc.path, h.state.native, tc.native)
+		}
+		_ = h.Close(context.Background())
 	}
 }
 

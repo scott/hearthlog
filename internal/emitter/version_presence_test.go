@@ -89,7 +89,7 @@ func TestVersionPresence(t *testing.T) {
 				if closeErr == nil {
 					t.Errorf("Close: expected error for %s, got nil", tc.name)
 				}
-				if got := h.state.sent.Load(); got != 0 {
+				if got := h.Stats().SentBatches; got != 0 {
 					t.Errorf("sent = %d, want 0 for %s", got, tc.name)
 				}
 			} else {
@@ -99,7 +99,7 @@ func TestVersionPresence(t *testing.T) {
 				if closeErr != nil {
 					t.Errorf("Close: unexpected error for %s: %v", tc.name, closeErr)
 				}
-				if got := h.state.sent.Load(); got != 1 {
+				if got := h.Stats().SentBatches; got != 1 {
 					t.Errorf("sent = %d, want 1 for %s", got, tc.name)
 				}
 			}

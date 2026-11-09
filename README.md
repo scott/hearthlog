@@ -16,6 +16,7 @@ SQLite intentionally keeps a low-volume single-node MVP simple. PostgreSQL can b
 - [Investigation Flow](docs/ui/INVESTIGATION.md)
 - [Slice 02 scope and local run/test guide](docs/SLICE02.md)
 - [Slice 02 scope notes](docs/SLICE02-SCOPE.md)
+- [Go slog SDK integration guide (Slice 03)](docs/SDK.md) and [evidence](docs/evidence/SLICE03.md)
 
 The final twelve-slice deliverable must include a versioned binary for declared tested targets, reproducible build and checksum verification, generic deployment/upgrade/backup/recovery instructions, and a compilable synthetic service-integration guide. Fresh installation and demo-service search/Live/restart persistence must be proven using only those instructions. This is planned acceptance, not an available release or universal static binary claim.
 
