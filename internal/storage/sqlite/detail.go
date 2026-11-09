@@ -13,6 +13,11 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrRowExpired means the row is in this workspace but its receipt time is
+// older than the live retention cutoff. A cursor page can still show it
+// because that page keeps the cutoff from when the cursor was issued.
+var ErrRowExpired = errors.New("row expired")
+
 func (s *Store) Detail(ctx context.Context, scope model.Scope, id string) (model.Record, error) {
 	var rec model.Record
 	if scope.WorkspaceID == "" {
@@ -30,8 +35,8 @@ func (s *Store) Detail(ctx context.Context, scope model.Scope, id string) (model
 
 	query := `SELECT ingest_id, event_id, source_id, event_time, received_at, severity_number, severity_text, message, attributes
 		FROM logs
-		WHERE workspace_id = ? AND ingest_id = ? AND received_at >= ?`
-	args := []any{scope.WorkspaceID, idInt, cutoff}
+		WHERE workspace_id = ? AND ingest_id = ?`
+	args := []any{scope.WorkspaceID, idInt}
 	if scope.SourceID != "" {
 		query += ` AND source_id = ?`
 		args = append(args, scope.SourceID)
@@ -48,7 +53,13 @@ func (s *Store) Detail(ctx context.Context, scope model.Scope, id string) (model
 		if errors.Is(err, sql.ErrNoRows) {
 			return rec, ErrNotFound
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return rec, ErrQueryTimeout
+		}
 		return rec, ErrStorage
+	}
+	if receivedAt < cutoff {
+		return model.Record{}, ErrRowExpired
 	}
 
 	rec.IngestID = fmt.Sprintf("%d", ingestID)

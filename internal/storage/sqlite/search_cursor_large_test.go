@@ -73,7 +73,7 @@ func TestCursorPageAfterMinuteOnLargeWorkspace(t *testing.T) {
 	rows.Close()
 	joined := strings.Join(plan, "\n")
 	t.Logf("explain_retention_exists=%s", joined)
-	if !strings.Contains(joined, "idx_logs_retention") || strings.Contains(joined, "idx_logs_ws_ingest") {
+	if !strings.Contains(joined, IndexLogsRetention) || strings.Contains(joined, "idx_logs_ws_ingest") {
 		t.Fatalf("retention plan: %s", joined)
 	}
 

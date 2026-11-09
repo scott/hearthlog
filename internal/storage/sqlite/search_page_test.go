@@ -395,7 +395,7 @@ func TestIndexesAndExplain(t *testing.T) {
 		names = append(names, n)
 	}
 	rows.Close()
-	for _, want := range []string{"idx_logs_time", "idx_logs_ws_time", "idx_logs_ws_ingest", "idx_logs_retention"} {
+	for _, want := range []string{"idx_logs_time", "idx_logs_ws_time", "idx_logs_ws_ingest", IndexLogsRetention} {
 		if !containsStr(names, want) {
 			t.Fatalf("missing %s in %v", want, names)
 		}

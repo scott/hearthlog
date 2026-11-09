@@ -91,8 +91,11 @@ func ValidateQuery(q Query) error {
 	if len(q.Cursor) > MaxQueryBytes {
 		return ErrValidation
 	}
-
-	b, err := json.Marshal(q)
+	// The cursor has its own 4KiB cap. The filter JSON is capped separately
+	// so a page token is not rejected for repeating the filters it already binds.
+	bare := q
+	bare.Cursor = ""
+	b, err := json.Marshal(bare)
 	if err != nil || len(b) > MaxQueryBytes {
 		return ErrValidation
 	}

@@ -8,6 +8,10 @@ import (
 
 var ErrVersionMismatch = errors.New("schema version mismatch")
 
+// IndexLogsRetention is the receipt-time index. Schema statements and the
+// cursor retention lookup both use this name.
+const IndexLogsRetention = "idx_logs_retention"
+
 // logsImmutableTrigger rejects UPDATE. Logs are insert-and-delete only, and
 // there is no FTS update trigger. rank=1 integrity-check compares external content.
 const logsImmutableTrigger = `CREATE TRIGGER IF NOT EXISTS logs_bu BEFORE UPDATE ON logs BEGIN
@@ -60,7 +64,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_logs_ws_time ON logs(workspace_id, event_time DESC, ingest_id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_ws_ingest ON logs(workspace_id, ingest_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_received ON logs(workspace_id, source_id, received_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_logs_retention ON logs(received_at, ingest_id)`,
+		`CREATE INDEX IF NOT EXISTS ` + IndexLogsRetention + ` ON logs(received_at, ingest_id)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS logs_fts USING fts5(
 			message,
 			content='logs',

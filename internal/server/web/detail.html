@@ -1,22 +1,54 @@
-{{define "detail"}}
+{{define "detail-body"}}
 <div id="detail-region" data-fragment-kind="detail" data-generation="{{.Generation}}" data-sequence="{{.Sequence}}" data-selection="{{.Selection}}" data-origin="{{.OriginID}}">
 {{if .Detail}}
 <section class="detail" data-event-id="{{.Detail.EventID}}" data-ingest-id="{{.Detail.IngestID}}" data-severity="{{.Detail.SeverityNumber}}" data-time="{{.Detail.EventTime}}" data-source="{{.Detail.SourceID}}">
-<h2 id="detail-heading" tabindex="-1">{{.Detail.SeverityText}}: {{.Detail.Message}}</h2>
+<h2 id="detail-heading" tabindex="-1"{{if eq .Focus "detail"}} autofocus{{end}}>Event details</h2>
+<form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
+{{if .PageCursor}}{{template "cursor-only" .}}{{else}}{{template "frozen" .}}{{end}}
+<input type="hidden" name="origin" value="{{.Detail.IngestID}}">
+<button type="submit" id="btn-back">Back to results</button>
+</form>
 <dl class="detail-meta">
-<dt>Event time</dt><dd>{{.Detail.EventTime}}</dd>
-<dt>Received</dt><dd>{{.Detail.ReceivedAt}}</dd>
-<dt>Severity</dt><dd>{{.Detail.SeverityNumber}} ({{.Detail.SeverityText}})</dd>
-<dt>Source</dt><dd>{{.Detail.SourceID}}</dd>
+<dt>Event time</dt><dd>{{formatUTC .Detail.EventTime "2006-01-02 15:04:05.000000"}} UTC</dd>
+<dt>Received</dt><dd>{{formatUTC .Detail.ReceivedAt "2006-01-02 15:04:05.000000"}} UTC</dd>
+<dt>Severity</dt><dd>{{.Detail.SeverityText}} ({{.Detail.SeverityNumber}})</dd>
+<dt>Source</dt><dd>{{srcLabel .Sources .Detail.SourceID}}</dd>
 </dl>
 <p class="detail-message">{{.Detail.Message}}</p>
-<pre class="detail-attrs">{{printf "%s" .Detail.Attributes}}</pre>
+<details>
+<summary id="btn-show-full">Show full</summary>
+<pre class="detail-message">{{.Detail.Message}}</pre>
+</details>
+<h3>Attributes</h3>
+<ul class="attrs">
+{{range .Attrs}}
+<li class="attr d{{.Depth}}">
+<span class="key">{{.Key}}</span>
+{{if .Type}}<span class="badge">{{.Type}}</span>{{end}}
+{{if .Display}}<span class="avalue">{{.Display}}</span>{{end}}
+{{if .Filterable}}
 <form method="POST" action="/investigate/search" hx-post="/investigate/search" hx-target="#results-region" hx-swap="outerHTML">
-{{template "context" .}}
-<input type="hidden" name="origin" value="{{.Detail.IngestID}}">
-<button type="submit">Back to results</button>
+{{template "frozen" $}}
+<input type="hidden" name="path" value="{{.Path}}">
+<input type="hidden" name="op" value="{{.Op}}">
+<input type="hidden" name="ptype" value="{{.PType}}">
+<input type="hidden" name="pval" value="{{.PValue}}">
+<button type="submit" id="{{.FilterID}}"{{if ge (len $.PredFields) 8}} disabled{{end}}>Filter</button>
 </form>
+{{else if .Unsupported}}
+<button type="button" disabled>Unsupported path</button>
+{{end}}
+</li>
+{{end}}
+</ul>
+<button type="button" id="btn-copy">Copy JSON</button>
+<pre id="redacted-json" class="detail-attrs">{{printf "%s" .Detail.Attributes}}</pre>
 </section>
 {{end}}
 </div>
+{{end}}
+
+{{define "detail"}}
+{{template "detail-body" .}}
+<p id="status" hx-swap-oob="true" aria-live="polite" tabindex="-1" data-code="{{.Code}}">{{.Status}}</p>
 {{end}}

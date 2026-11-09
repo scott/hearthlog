@@ -119,7 +119,10 @@ func TestInvalidCursorRejected(t *testing.T) {
 	vals := resultForm(csrf, q)
 	vals.Set("cursor", "tampered.cursor")
 	code, _, body := postForm(t, client, ts.URL, "/investigate/search", vals, false)
-	if code != http.StatusBadRequest || !bytes.Contains(body, []byte(`"code":"invalid_query"`)) {
+	if code != http.StatusBadRequest || !bytes.Contains(body, []byte("Query is invalid")) {
 		t.Fatalf("status %d body %s", code, body)
+	}
+	if bytes.Contains(body, []byte("tampered.cursor")) {
+		t.Fatal("invalid cursor echoed")
 	}
 }

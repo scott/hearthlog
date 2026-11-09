@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"example.invalid/hearthlog/internal/model"
 )
@@ -20,19 +21,71 @@ var tmpl = template.Must(template.New("root").Funcs(template.FuncMap{
 		}
 		return ss[0]
 	},
+	"add": func(a, b int) int { return a + b },
+	"formatUTC": func(s, layout string) string {
+		t, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			return s
+		}
+		return t.UTC().Format(layout)
+	},
+	"srcLabel": func(sources []sourceInfo, id string) string {
+		for _, s := range sources {
+			if s.ID == id {
+				return s.Service + " (" + s.Environment + ")"
+			}
+		}
+		return id
+	},
+	"hasSource": func(selected []string, id string) bool {
+		if len(selected) == 0 {
+			return false
+		}
+		for _, s := range selected {
+			if s == id {
+				return true
+			}
+		}
+		return false
+	},
 }).ParseFS(embedFS, "web/*.html"))
 
+type sourceInfo struct {
+	ID          string
+	Service     string
+	Environment string
+}
+
+type savedInfo struct {
+	Name   string
+	Preset string
+}
+
 type view struct {
-	CSRF       string
-	Query      model.Query
-	Rows       []model.Record
-	NextCursor string
-	Detail     *model.Record
-	Status     string
-	Generation string
-	Sequence   string
-	Selection  string
-	OriginID   string
+	CSRF            string
+	Query           model.Query
+	Rows            []model.Record
+	NextCursor      string
+	PageCursor      string
+	Detail          *model.Record
+	Attrs           []attrNode
+	Status          string
+	Code            string
+	Generation      string
+	Sequence        string
+	Selection       string
+	OriginID        string
+	Sources         []sourceInfo
+	SourcesOK       bool
+	Saved           []savedInfo
+	Preset          string
+	TermFields      []string
+	PredFields      []predInput
+	Window          string
+	Focus           string
+	NoEvents        bool
+	SuppressResults bool
+	Partial         bool
 }
 
 // beforeRender runs at the start of render when a test installs it.

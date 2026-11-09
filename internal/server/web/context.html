@@ -1,10 +1,43 @@
 {{define "context"}}
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<input type="hidden" name="source" value="{{first .Query.Sources}}">
+<input type="hidden" name="preset" value="{{.Preset}}">
+{{range .Query.Sources}}<input type="hidden" name="source" value="{{.}}">{{end}}
 <input type="hidden" name="from" value="{{.Query.From}}">
 <input type="hidden" name="to" value="{{.Query.To}}">
 <input type="hidden" name="severity" value="{{.Query.MinSeverity}}">
-<input type="hidden" name="term" value="{{first .Query.Terms}}">
+{{range .Query.Terms}}<input type="hidden" name="term" value="{{.}}">{{end}}
+{{range .PredFields}}
+<input type="hidden" name="path" value="{{.Path}}">
+<input type="hidden" name="op" value="{{.Op}}">
+<input type="hidden" name="ptype" value="{{.Type}}">
+<input type="hidden" name="pval" value="{{.Value}}">
+{{end}}
+<input type="hidden" name="generation" value="{{.Generation}}">
+<input type="hidden" name="sequence" value="{{.Sequence}}">
+{{end}}
+
+{{define "frozen"}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="preset" value="custom">
+{{range .Query.Sources}}<input type="hidden" name="source" value="{{.}}">{{end}}
+<input type="hidden" name="from" value="{{.Query.From}}">
+<input type="hidden" name="to" value="{{.Query.To}}">
+<input type="hidden" name="severity" value="{{.Query.MinSeverity}}">
+{{range .Query.Terms}}<input type="hidden" name="term" value="{{.}}">{{end}}
+{{range .PredFields}}
+<input type="hidden" name="path" value="{{.Path}}">
+<input type="hidden" name="op" value="{{.Op}}">
+<input type="hidden" name="ptype" value="{{.Type}}">
+<input type="hidden" name="pval" value="{{.Value}}">
+{{end}}
+<input type="hidden" name="generation" value="{{.Generation}}">
+<input type="hidden" name="sequence" value="{{.Sequence}}">
+{{end}}
+
+{{define "cursor-only"}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="preset" value="{{.Preset}}">
+<input type="hidden" name="cursor" value="{{.PageCursor}}">
 <input type="hidden" name="generation" value="{{.Generation}}">
 <input type="hidden" name="sequence" value="{{.Sequence}}">
 {{end}}

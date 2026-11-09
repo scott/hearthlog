@@ -41,6 +41,7 @@ function makeEnv() {
       }
     };
   }
+  const cursors = [];
   const doc = {
     getElementById: (id) => elements[id] || null,
     querySelector: (sel) => {
@@ -48,7 +49,7 @@ function makeEnv() {
       if (sel === 'input[name="sequence"]') return { value: '1' };
       return null;
     },
-    querySelectorAll: () => [],
+    querySelectorAll: (sel) => sel === 'input[name="cursor"]' ? cursors : [],
     createElement: () => ({ href: '', textContent: '' }),
     addEventListener: () => {}
   };
@@ -66,7 +67,7 @@ function makeEnv() {
     console: { log: () => {} }
   };
   sandbox.window.location = win.location;
-  return { sandbox, listeners, elements, form };
+  return { sandbox, listeners, elements, form, cursors };
 }
 
 function focusFixture() {
@@ -201,7 +202,7 @@ test('non-auth focus: current/stale/unknown', () => {
     assert.strictEqual(A.aborts, 1);
     assert.strictEqual(B.aborts, 0);
     assert.strictEqual(f.focusCount(), 0);
-    assert.strictEqual(f.elements['status'].textContent, '');
+    assert.strictEqual(f.elements['status'].textContent, 'Searching...');
     f.listeners[ev]({ detail: { xhr: A } });
     f.listeners[ev]({ detail: { xhr: { status: st, abort: () => {} } } });
     assert.strictEqual(f.focusCount(), 0);
@@ -209,9 +210,46 @@ test('non-auth focus: current/stale/unknown', () => {
     f.listeners[ev]({ detail: { xhr: B } });
     assert.strictEqual(f.focusCount(), 1);
     assert.strictEqual(B.aborts, 1);
-    assert.strictEqual(f.elements['status'].textContent, 'Request failed. Retry manually.');
+    const want = ev === 'htmx:timeout'
+      ? 'Query timed out. Narrow the time window, then run Search.'
+      : 'Request failed. Retry manually.';
+    assert.strictEqual(f.elements['status'].textContent, want);
     assert.strictEqual(f.elements['results-region'].innerHTML, '<div id="protected-results">data</div>');
     assert.strictEqual(f.elements['detail-region'].innerHTML, '<div id="protected-detail">data</div>');
+  }
+});
+
+test('422, 410, and 504 tell the user what to do', () => {
+  const cases = [
+    [422, 'Query too broad. Narrow the time window, then run Search.'],
+    [410, 'Results expired. Rerun query.'],
+    [504, 'Query timed out. Narrow the time window, then run Search.']
+  ];
+  for (const [st, text] of cases) {
+    const env = makeEnv();
+    const cursor = { value: 'signed-cursor' };
+    env.cursors.push(cursor);
+    env.elements['status'].focus = () => {};
+    vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+    const xhr = {
+      status: st,
+      responseText: '<script>alert(1)</script>',
+      abort: () => {},
+      getResponseHeader: () => '',
+      responseURL: 'http://localhost:8080/investigate/search'
+    };
+    env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault: () => {} });
+    env.listeners['htmx:beforeRequest']({ detail: { xhr, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+    env.listeners['htmx:afterRequest']({ detail: { xhr } });
+    assert.strictEqual(env.elements['status'].textContent, text);
+    assert.ok(!String(env.elements['status'].textContent).includes('<script>'));
+    assert.strictEqual(env.elements['results-region'].innerHTML, '');
+    if (st === 410) {
+      assert.strictEqual(cursor.value, '');
+    } else {
+      assert.strictEqual(cursor.value, 'signed-cursor');
+      assert.strictEqual(env.elements['results-region'].getAttribute && env.elements['results-region'].stale, undefined);
+    }
   }
 });
 
@@ -244,4 +282,141 @@ test('auth denial: 401/403 fail closed, idempotent, no override', () => {
     f.listeners['htmx:afterRequest']({ detail: { xhr: { status: 401, abort: () => {} } } });
     assert.strictEqual(f.focusCount(), 1);
   }
+});
+
+test('status notices hit the live node', () => {
+  const env = makeEnv();
+  env.elements['status'].focus = () => {};
+  env.elements['status'].setAttribute = () => {};
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  const live = {
+    textContent: 'Results',
+    focusCount: 0,
+    focus() { this.focusCount++; },
+    setAttribute() {},
+    appendChild(el) { this.link = el; }
+  };
+  env.elements['status'] = live;
+  function fire(status, notice) {
+    const xhr = {
+      status,
+      responseText: '<script>alert(1)</script>',
+      abort() {},
+      getResponseHeader: (h) => (h === 'X-Notice' ? notice : ''),
+      responseURL: 'http://localhost:8080/investigate/search'
+    };
+    env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+    env.listeners['htmx:beforeRequest']({ detail: { xhr, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+    let prevented = false;
+    env.listeners['htmx:beforeSwap']({ detail: { xhr }, preventDefault() { prevented = true; } });
+    env.listeners['htmx:afterRequest']({ detail: { xhr } });
+    return prevented;
+  }
+  assert.strictEqual(fire(422, ''), true);
+  assert.strictEqual(live.textContent, 'Query too broad. Narrow the time window, then run Search.');
+  assert.ok(live.focusCount >= 1);
+  assert.ok(!live.textContent.includes('<script>'));
+  assert.strictEqual(fire(410, ''), true);
+  assert.strictEqual(live.textContent, 'Results expired. Rerun query.');
+  assert.strictEqual(fire(504, ''), true);
+  assert.strictEqual(live.textContent, 'Query timed out. Narrow the time window, then run Search.');
+  assert.strictEqual(fire(503, ''), true);
+  assert.strictEqual(live.textContent, 'Service busy. Wait, then run Search again.');
+  assert.strictEqual(fire(400, 'invalid_query'), true);
+  assert.strictEqual(live.textContent, 'Query is invalid');
+  assert.strictEqual(fire(400, 'unsupported_path'), true);
+  assert.strictEqual(live.textContent, 'Attribute path not supported');
+  assert.strictEqual(fire(404, 'row_expired'), true);
+  assert.strictEqual(live.textContent, 'Row expired. Rerun query. This row is past the retention window.');
+  assert.strictEqual(fire(404, 'not_found'), true);
+  assert.strictEqual(live.textContent, 'Event not found');
+  assert.strictEqual(fire(400, 'constructor'), true);
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
+  assert.strictEqual(fire(400, 'toString'), true);
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
+  const kept = live.textContent;
+  env.listeners['htmx:afterRequest']({
+    detail: {
+      xhr: {
+        status: 400,
+        abort() {},
+        getResponseHeader: () => 'invalid_query',
+        responseURL: 'http://localhost:8080/investigate/search'
+      }
+    }
+  });
+  assert.strictEqual(live.textContent, kept);
+  const net = {
+    status: 0,
+    abort() {},
+    getResponseHeader: () => '',
+    responseURL: 'http://localhost:8080/investigate/search'
+  };
+  env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+  env.listeners['htmx:beforeRequest']({ detail: { xhr: net, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+  env.listeners['htmx:sendError']({ detail: { xhr: net } });
+  assert.strictEqual(live.textContent, 'Request failed. Retry manually.');
+  assert.strictEqual(fire(401, ''), true);
+  assert.strictEqual(live.textContent, 'Session expired. ');
+  assert.strictEqual(live.link.href, '/login');
+  assert.strictEqual(live.link.textContent, 'Sign in');
+});
+
+test('notice focus survives a late results settle', () => {
+  const env = makeEnv();
+  let focused = '';
+  env.elements['status'].focus = () => { focused = 'status'; };
+  env.elements['results-heading'].focus = () => { focused = 'results-heading'; };
+  env.elements['detail-heading'].focus = () => { focused = 'detail-heading'; };
+  env.elements['event-7-open'] = { focus() { focused = 'event-7-open'; } };
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  function header(kind, origin) {
+    return (h) => {
+      if (h === 'X-Fragment-Kind') return kind;
+      if (h === 'X-Origin') return origin;
+      return '';
+    };
+  }
+  env.listeners['htmx:afterSwap']({ detail: { xhr: { getResponseHeader: header('results', '') } } });
+  assert.strictEqual(focused, 'results-heading');
+  const xhr = {
+    status: 422,
+    abort() {},
+    getResponseHeader: () => '',
+    responseURL: 'http://localhost:8080/investigate/search'
+  };
+  env.listeners['htmx:configRequest']({ detail: { parameters: {} }, preventDefault() {} });
+  env.listeners['htmx:beforeRequest']({ detail: { xhr, requestConfig: { parameters: {}, path: '/investigate/search' } } });
+  env.listeners['htmx:afterRequest']({ detail: { xhr } });
+  assert.strictEqual(focused, 'status');
+  env.elements['results-heading'].focus();
+  assert.strictEqual(focused, 'results-heading');
+  env.listeners['htmx:afterSettle']({});
+  assert.strictEqual(focused, 'status');
+  env.listeners['htmx:afterSwap']({ detail: { xhr: { getResponseHeader: header('results', '7') } } });
+  assert.strictEqual(focused, 'event-7-open');
+  env.listeners['htmx:afterSettle']({});
+  assert.strictEqual(focused, 'event-7-open');
+});
+
+test('submit disables the submitter after the turn', () => {
+  const env = makeEnv();
+  const docListeners = {};
+  env.sandbox.document.addEventListener = (ev, cb) => { docListeners[ev] = cb; };
+  const timers = [];
+  env.sandbox.setTimeout = (fn) => { timers.push(fn); };
+  vm.runInNewContext(fs.readFileSync(APP_PATH, 'utf8'), env.sandbox);
+  const first = { tagName: 'BUTTON', disabled: false, setAttribute() {}, isConnected: true };
+  const clicked = { tagName: 'BUTTON', disabled: false, busy: false, setAttribute() { this.busy = true; }, isConnected: true };
+  docListeners.submit({
+    target: { tagName: 'FORM', querySelector: () => first },
+    submitter: clicked
+  });
+  assert.strictEqual(clicked.disabled, false);
+  assert.strictEqual(first.disabled, false);
+  assert.strictEqual(timers.length, 1);
+  timers[0]();
+  assert.strictEqual(clicked.disabled, true);
+  assert.strictEqual(clicked.busy, true);
+  assert.strictEqual(first.disabled, false);
 });
