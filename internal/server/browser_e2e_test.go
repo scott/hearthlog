@@ -12,6 +12,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,6 +41,12 @@ func TestClientContracts(t *testing.T) {
 	}
 	if strings.Contains(sheet, "--accent:#1565c0") {
 		t.Fatal("link accent must stay the lighter blue")
+	}
+	if !strings.Contains(sheet, "#btn-search-gap{color:#f4f7ff;") {
+		t.Fatal("search gap link must use the light text color")
+	}
+	if !strings.Contains(sheet, "#btn-search-gap[hidden]{display:none}") {
+		t.Fatal("search gap link must stay undisplayed while hidden")
 	}
 
 	store, ts, readTok, _, _ := newTestApp(t)
@@ -175,6 +184,168 @@ func chromePath(t *testing.T) string {
 	return ""
 }
 
+// runBrowserNode runs the harness and fails the test if node stops printing.
+// A stall sends SIGUSR2 so node writes a diagnostic report, then kills the
+// process group. Heartbeat lines show whether DevTools still answers, which
+// separates a wedged renderer from a harness wait.
+func runBrowserNode(t *testing.T, limit time.Duration, extra []string, onLine func(line string, stdin io.Writer) error) {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	reportDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	cmd := exec.Command("node",
+		"--report-on-signal",
+		"--report-exclude-env",
+		"--report-directory="+reportDir,
+		"--report-filename=e2e-report.json",
+		filepath.Join(filepath.Dir(file), "browser_e2e.js"),
+	)
+	cmd.Env = append(os.Environ(), extra...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	lines := make(chan string, 256)
+	scanDone := make(chan error, 1)
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			last.Store(time.Now().UnixNano())
+			lines <- sc.Text()
+		}
+		scanDone <- sc.Err()
+		close(lines)
+	}()
+
+	var killOnce sync.Once
+	var watchMsg atomic.Value
+	stop := make(chan struct{})
+	dumpAndKill := func(reason string) {
+		killOnce.Do(func() {
+			msg := reason
+			if cmd.Process != nil {
+				_ = cmd.Process.Signal(syscall.SIGUSR2)
+				msg += "\n" + waitNodeReport(reportDir, 3*time.Second)
+				pid := cmd.Process.Pid
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				_ = cmd.Process.Kill()
+			}
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			msg += "\nGOROUTINES\n" + string(buf[:n])
+			watchMsg.Store(msg)
+		})
+	}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				dumpAndKill("harness deadline")
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, last.Load())) < 30*time.Second {
+					continue
+				}
+				dumpAndKill("no harness output for 30s")
+				return
+			}
+		}
+	}()
+
+	passed := false
+	var failLine string
+	var handleErr error
+	for line := range lines {
+		t.Log(line)
+		if line == "PASS" {
+			passed = true
+		}
+		if strings.HasPrefix(line, "FAIL") {
+			failLine = line
+		}
+		if handleErr == nil && onLine != nil {
+			handleErr = onLine(line, stdin)
+		}
+	}
+	close(stop)
+	waitErr := cmd.Wait()
+	if err := <-scanDone; err != nil && handleErr == nil {
+		handleErr = err
+	}
+	if msg, _ := watchMsg.Load().(string); msg != "" {
+		t.Fatalf("%s\n%s", msg, stderr.String())
+	}
+	if handleErr != nil || !passed || waitErr != nil || failLine != "" {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Logf("GOROUTINES\n%s", buf[:n])
+		t.Fatalf("browser harness failed: %v %v\n%s\n%s", waitErr, handleErr, failLine, stderr.String())
+	}
+}
+
+func waitNodeReport(dir string, d time.Duration) string {
+	deadline := time.Now().Add(d)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(dir, "*"))
+		for _, name := range matches {
+			b, err := os.ReadFile(name)
+			if err != nil || len(b) == 0 || !json.Valid(b) {
+				continue
+			}
+			return summarizeNodeReport(b)
+		}
+		if time.Now().After(deadline) {
+			return "node report was not written"
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func summarizeNodeReport(b []byte) string {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return "report unreadable"
+	}
+	var bld strings.Builder
+	for _, key := range []string{"javascriptStack", "nativeStack", "libuv"} {
+		raw := doc[key]
+		s := string(raw)
+		if len(s) > 2000 {
+			s = s[:2000] + "..."
+		}
+		bld.WriteString(key)
+		bld.WriteString(": ")
+		bld.WriteString(s)
+		bld.WriteByte('\n')
+	}
+	if bld.Len() == 0 {
+		return "node report had no stack"
+	}
+	return bld.String()
+}
+
 func TestBrowserE2E(t *testing.T) {
 	chrome := chromePath(t)
 	store, ts, readTok, _, _ := newTestApp(t)
@@ -224,66 +395,100 @@ func TestBrowserE2E(t *testing.T) {
 	}
 	setClock(S)
 
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
+	limit := 3 * time.Minute
+	if os.Getenv("E2E_SHOT_DIR") != "" {
+		limit = 10 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(file), "browser_e2e.js"))
-	cmd.Env = append(os.Environ(),
-		"BASE="+origin,
-		"READ_TOKEN="+readTok,
-		"CHROME="+chrome,
-		"AGING_FROM="+commitAt.Format(time.RFC3339Nano),
-		"AGING_TO="+commitAt.Add(7*24*time.Hour).Format(time.RFC3339Nano),
-	)
+	env := []string{
+		"BASE=" + origin,
+		"READ_TOKEN=" + readTok,
+		"CHROME=" + chrome,
+		"AGING_FROM=" + commitAt.Format(time.RFC3339Nano),
+		"AGING_TO=" + commitAt.Add(7*24*time.Hour).Format(time.RFC3339Nano),
+	}
 	if dir := os.Getenv("E2E_SHOT_DIR"); dir != "" {
-		cmd.Env = append(cmd.Env, "E2E_SHOT_DIR="+dir)
+		env = append(env, "E2E_SHOT_DIR="+dir)
 	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	passed := false
-	sc := bufio.NewScanner(stdout)
-	for sc.Scan() {
-		line := sc.Text()
-		t.Log(line)
+	runBrowserNode(t, limit, env, func(line string, stdin io.Writer) error {
 		switch line {
 		case "NEED_CLOCK row":
 			setClock(S.Add(2 * time.Minute))
-			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
-				t.Fatal(err)
-			}
 		case "NEED_CLOCK cursor":
 			setClock(S.Add(2*time.Minute + 16*time.Minute))
-			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
-				t.Fatal(err)
-			}
 		case "NEED_CLOCK reset":
 			setClock(S)
-			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
-				t.Fatal(err)
+		case "NEED_LIVE":
+			for i := 0; i < 12; i++ {
+				if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9000+i, S, "synthetic live arrived", `{"k":1}`)); err != nil {
+					return err
+				}
 			}
-		case "PASS":
-			passed = true
+		case "NEED_LIVE_HOLD":
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9100, S, "synthetic live while paused", `{"k":1}`)); err != nil {
+				return err
+			}
+		case "NEED_GAP":
+			for b := 0; b < 25; b++ {
+				batch := nativeEvents(t, 9200+b, 200, S, "synthetic gap row", `{"k":1}`)
+				raw, err := json.Marshal(batch)
+				if err != nil {
+					return err
+				}
+				if _, err := store.CommitNative(context.Background(), scope, batch, len(raw)); err != nil {
+					return err
+				}
+			}
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 9299, S, "synthetic gap row", `{"k":1}`)); err != nil {
+				return err
+			}
+		default:
+			return nil
 		}
-		if strings.HasPrefix(line, "FAIL") {
-			t.Errorf("%s", line)
-		}
+		_, err := io.WriteString(stdin, "ok\n")
+		return err
+	})
+}
+
+func TestLiveBrowserP95(t *testing.T) {
+	chrome := chromePath(t)
+	store, ts, readTok, _, _ := newTestApp(t)
+	origin := "http://" + ts.Listener.Addr().String()
+	S := time.Date(2026, 6, 15, 12, 0, 30, 0, time.UTC)
+	store.SetClock(func() time.Time { return S })
+	scope := model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}
+	if _, err := store.Commit(context.Background(), scope, oneEvent(t, 80, S, "synthetic latency seed", `{"k":1}`)); err != nil {
+		t.Fatal(err)
 	}
-	waitErr := cmd.Wait()
-	if !passed || waitErr != nil {
-		t.Fatalf("browser e2e failed: %v\n%s", waitErr, stderr.String())
+	var p95 string
+	n := 0
+	runBrowserNode(t, 3*time.Minute, []string{
+		"BASE=" + origin,
+		"READ_TOKEN=" + readTok,
+		"CHROME=" + chrome,
+		"E2E_LATENCY=1",
+		"AGING_FROM=" + S.Format(time.RFC3339Nano),
+		"AGING_TO=" + S.Add(time.Minute).Format(time.RFC3339Nano),
+	}, func(line string, stdin io.Writer) error {
+		switch {
+		case strings.HasPrefix(line, "NEED_LATENCY "):
+			msg := strings.TrimPrefix(line, "NEED_LATENCY ")
+			n++
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 8000+n, S, msg, `{"k":1}`)); err != nil {
+				return err
+			}
+			_, err := io.WriteString(stdin, "ok\n")
+			return err
+		case strings.HasPrefix(line, "LATENCY_P95_MS "):
+			p95 = strings.TrimPrefix(line, "LATENCY_P95_MS ")
+		}
+		return nil
+	})
+	ms, err := time.ParseDuration(p95 + "ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("browser_idle_p95=%s", ms)
+	if ms >= 2*time.Second {
+		t.Fatalf("browser p95 %s", ms)
 	}
 }

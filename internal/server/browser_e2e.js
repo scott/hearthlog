@@ -12,7 +12,11 @@ const AGING_FROM = process.env.AGING_FROM || '';
 const AGING_TO = process.env.AGING_TO || '';
 const SHOT_DIR = process.env.E2E_SHOT_DIR || '';
 
-function say(s) { fs.writeSync(1, s + '\n'); }
+let step = 'boot';
+function say(s) {
+  if (s.startsWith('STEP ') || s.startsWith('NEED_') || s.startsWith('live-')) step = s;
+  fs.writeSync(1, s + '\n');
+}
 
 const pendingLines = [];
 let lineWait = null;
@@ -35,7 +39,16 @@ process.stdin.on('data', (chunk) => {
 });
 function nextLine() {
   if (pendingLines.length) return Promise.resolve(pendingLines.shift());
-  return new Promise((resolve) => { lineWait = resolve; });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (lineWait) lineWait = null;
+      reject(new Error('timeout waiting for harness reply at ' + step));
+    }, 45000);
+    lineWait = (line) => {
+      clearTimeout(timer);
+      resolve(line);
+    };
+  });
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -133,10 +146,17 @@ function connect(url) {
       else resolve(msg.result || {});
     }
   });
-  function send(method, params, sessionId) {
+  function send(method, params, sessionId, timeoutMs) {
     const id = ++seq;
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error('devtools timeout ' + method));
+      }, timeoutMs || 20000);
+      pending.set(id, {
+        resolve(v) { clearTimeout(timer); resolve(v); },
+        reject(e) { clearTimeout(timer); reject(e); }
+      });
       const payload = { id, method, params: params || {} };
       if (sessionId) payload.sessionId = sessionId;
       ws.send(JSON.stringify(payload));
@@ -151,6 +171,57 @@ function noteCSP(text) {
     csp.push(text);
   }
 }
+
+const TRACE_SRC = `(function(){
+if (window.__hxlog) return;
+window.__hxlog = [];
+function push(s){
+  window.__hxlog.push(String(s).replace(/\\s+/g, ' ').slice(0, 480));
+  if (window.__hxlog.length > 24) window.__hxlog.shift();
+}
+function idOf(el){
+  if (!el || !el.getAttribute) return '';
+  return el.getAttribute('id') || el.tagName || '';
+}
+document.addEventListener('htmx:beforeRequest', function(e){
+  var d = e.detail || {};
+  var elt = d.elt || e.target;
+  if (d.xhr) d.xhr.__hlElt = idOf(elt);
+  var path = d.path || (d.requestConfig && d.requestConfig.path) || '';
+  push('before ' + idOf(elt) + ' ' + path);
+}, true);
+document.addEventListener('htmx:abort', function(e){
+  var d = e.detail || {};
+  push('abort-event ' + idOf(d.elt || e.target));
+}, true);
+document.addEventListener('submit', function(e){
+  push('submit ' + idOf(e.target) + ' by ' + idOf(e.submitter));
+}, true);
+window.addEventListener('pagehide', function(){ push('pagehide ' + location.pathname); });
+var origOpen = XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open = function(method, url){
+  this.__hlMethod = method;
+  this.__hlURL = String(url || '');
+  return origOpen.apply(this, arguments);
+};
+var origSend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.send = function(){
+  var url = this.__hlURL || '';
+  if (url.indexOf('/investigate/detail') !== -1) {
+    var stack = '';
+    try { stack = (new Error('xhr.send')).stack || ''; } catch (err) { stack = ''; }
+    push('xhr.send ' + (this.__hlElt || '') + ' ' + url + ' ' + stack);
+  }
+  return origSend.apply(this, arguments);
+};
+var origAbort = XMLHttpRequest.prototype.abort;
+XMLHttpRequest.prototype.abort = function(){
+  var stack = '';
+  try { stack = (new Error('xhr.abort')).stack || ''; } catch (err) { stack = ''; }
+  push('xhr.abort ' + (this.__hlElt || '') + ' ' + (this.__hlMethod || '') + ' ' + (this.__hlURL || '') + ' ' + stack);
+  return origAbort.apply(this, arguments);
+};
+})();`;
 
 async function launchChrome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-e2e-'));
@@ -196,6 +267,7 @@ async function newSession(send, opts) {
   const attached = await send('Target.attachToTarget', { targetId: created.targetId, flatten: true });
   const session = attached.sessionId;
   await send('Page.enable', {}, session);
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: TRACE_SRC }, session);
   await send('Runtime.enable', {}, session);
   await send('DOM.enable', {}, session);
   await send('Log.enable', {}, session);
@@ -263,9 +335,13 @@ async function diag(send, session) {
         preset: (document.getElementById('time-select') || {}).value || '',
         from: (document.getElementById('f-from') || {}).value || '',
         status: (document.getElementById('status') || {}).textContent || '',
+        live: (document.getElementById('live-status') || {}).textContent || '',
+        liveRows: document.querySelectorAll('#live-rows li').length,
+        liveTrigger: !!document.getElementById('live-trigger'),
         generation: gens,
         sequence: seqs,
-        activeHTML: a ? a.outerHTML : ''
+        activeHTML: a ? a.outerHTML : '',
+        hx: (window.__hxlog || []).slice(-8).join(' | ')
       });
     })()`);
   } catch (e) {
@@ -292,7 +368,7 @@ async function diag(send, session) {
     xSequence: headerValue(rec.headers, 'x-sequence'),
     body: oneLine(body, 180)
   };
-  return 'debug=' + oneLine(page, 700) + ' lastReq=' + oneLine(JSON.stringify(req), 900);
+  return 'debug=' + oneLine(page, 3500) + ' lastReq=' + oneLine(JSON.stringify(req), 900);
 }
 
 async function waitIdle(send, session) {
@@ -315,10 +391,26 @@ async function clickId(send, session, id) {
 }
 
 async function shot(send, session, name) {
+  await shotOf(send, session, name, '#status');
+}
+
+async function shotOf(send, session, name, sel) {
   if (!SHOT_DIR) return;
-  await ev(send, session, `document.getElementById('status') && document.getElementById('status').scrollIntoView({block:'center'})`);
+  await ev(send, session, `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el && el.scrollIntoView) el.scrollIntoView({block:'center'}); })()`);
   const r = await send('Page.captureScreenshot', { format: 'png' }, session);
   fs.writeFileSync(path.join(SHOT_DIR, name), Buffer.from(r.data, 'base64'));
+}
+
+async function boxWidth(send, session, width) {
+  await metrics(send, session, width, 800, width < 500);
+  const raw = await ev(send, session, `(() => {
+    const d = document.documentElement;
+    const b = document.body;
+    return JSON.stringify({width:${width}, client:d.clientWidth, scroll:Math.max(d.scrollWidth, b.scrollWidth)});
+  })()`);
+  const box = JSON.parse(raw);
+  if (box.scroll > box.client + 1) throw new Error('sideways scroll at ' + width + ' ' + raw);
+  return box;
 }
 
 async function login(send, session) {
@@ -328,6 +420,25 @@ async function login(send, session) {
   await waitIdle(send, session);
   await ev(send, session, `document.querySelector('button[type=submit]').click()`);
   await waitFn(send, session, `location.pathname === '/investigate' && document.getElementById('btn-search-implicit') ? 'yes' : ''`, 10000);
+}
+
+async function gapShown(send, session) {
+  return await ev(send, session, `(() => {
+    const el = document.getElementById('btn-search-gap');
+    if (!el) return 'missing';
+    const cs = getComputedStyle(el);
+    return (cs.display !== 'none' && el.getClientRects().length > 0) ? 'visible' : 'hidden';
+  })()`);
+}
+
+async function hasBox(send, session, selector) {
+  const nodeId = await domQuery(send, session, selector);
+  try {
+    await send('DOM.getBoxModel', { nodeId }, session);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function jsOffHTML(send, session) {
@@ -378,7 +489,60 @@ async function pressEnter(send, session, selector) {
   }, session);
 }
 
+async function runLatency(send, session, say) {
+  await clickId(send, session, 'btn-live-start');
+  await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Receiving' ? 'yes' : ''`);
+  const samples = [];
+  for (let i = 0; i < 20; i++) {
+    await waitFn(send, session, `(() => {
+      const el = document.getElementById('live-trigger');
+      return el && el.getAttribute('data-every') === '2000' ? 'yes' : '';
+    })()`, 15000);
+    await sleep(Math.floor(Math.random() * 1500));
+    const label = 'synthetic latency ' + String(i).padStart(2, '0');
+    const t0 = Date.now();
+    say('NEED_LATENCY ' + label);
+    await nextLine();
+    await waitFn(send, session, `document.getElementById('live-rows') && document.getElementById('live-rows').textContent.includes(${JSON.stringify(label)}) ? 'yes' : ''`, 8000);
+    samples.push(Date.now() - t0);
+  }
+  samples.sort((a, b) => a - b);
+  const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+  say('LATENCY_P95_MS ' + p95);
+  say('LATENCY_SAMPLES ' + samples.join(','));
+  if (p95 >= 2000) throw new Error('first row p95 ' + p95 + ' samples ' + samples.join(','));
+}
+
+let beatSend = null;
+let beatSession = null;
+let beatBusy = false;
+function startHeartbeat() {
+  setInterval(() => {
+    if (!beatSend || !beatSession) {
+      say('HEARTBEAT step=' + step + ' cdp=no-session');
+      return;
+    }
+    if (beatBusy) return;
+    beatBusy = true;
+    const started = Date.now();
+    beatSend('Runtime.evaluate', {
+      expression: `(() => {
+        const live = document.getElementById('live-status');
+        return document.readyState + ' ' + (live ? live.textContent : '');
+      })()`,
+      returnByValue: true
+    }, beatSession, 1000).then((v) => {
+      const value = v && v.result ? v.result.value : '';
+      say('HEARTBEAT step=' + step + ' cdp=ok ms=' + (Date.now() - started) + ' ' + oneLine(value, 80));
+    }).catch((e) => {
+      say('HEARTBEAT step=' + step + ' cdp=timeout ms=' + (Date.now() - started) + ' ' + oneLine(String(e && e.message || e), 120));
+    }).finally(() => { beatBusy = false; });
+  }, 3000);
+}
+
 async function main() {
+  say('STEP boot');
+  startHeartbeat();
   if (!BASE || !TOKEN || !CHROME || !AGING_FROM || !AGING_TO) {
     throw new Error('missing BASE, READ_TOKEN, CHROME, or aging window');
   }
@@ -400,9 +564,13 @@ async function main() {
     });
 
     const session = await newSession(send, {});
+    beatSend = send;
+    beatSession = session;
     say('STEP login');
     await login(send, session);
-
+    if (process.env.E2E_LATENCY === '1') {
+      await runLatency(send, session, say);
+    } else {
     say('STEP narrow');
     await metrics(send, session, 390, 844, true);
     const narrow = await ev(send, session, `document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 ? 'ok' : 'wide'`);
@@ -491,12 +659,14 @@ async function main() {
         const path = (info && info.requestPath) || '';
         if (path.indexOf('/search') === -1) return;
         document.body.removeEventListener('htmx:afterSwap', onSwap);
-        document.getElementById('msg-term-1').value = 'commonwide';
-        document.getElementById('pred-1').value = 'task.attempt';
-        document.querySelector('#filters select[name=op]').value = 'eq';
-        document.querySelector('#filters select[name=ptype]').value = 'integer';
-        document.querySelector('#filters input[name=pval]').value = '999';
-        document.getElementById('btn-search').click();
+        setTimeout(function() {
+          document.getElementById('msg-term-1').value = 'commonwide';
+          document.getElementById('pred-1').value = 'task.attempt';
+          document.querySelector('#filters select[name=op]').value = 'eq';
+          document.querySelector('#filters select[name=ptype]').value = 'integer';
+          document.querySelector('#filters input[name=pval]').value = '999';
+          document.getElementById('btn-search').click();
+        }, 0);
       });
       document.getElementById('btn-search').click();
     })()`);
@@ -532,10 +702,12 @@ async function main() {
         const path = (info && info.requestPath) || '';
         if (path.indexOf('/search') === -1) return;
         document.body.removeEventListener('htmx:afterSwap', onSwap);
-        document.getElementById('time-select').value = 'custom';
-        document.getElementById('f-from').value = 'not-a-time';
-        document.getElementById('f-to').value = 'not-a-time';
-        document.getElementById('btn-search').click();
+        setTimeout(function() {
+          document.getElementById('time-select').value = 'custom';
+          document.getElementById('f-from').value = 'not-a-time';
+          document.getElementById('f-to').value = 'not-a-time';
+          document.getElementById('btn-search').click();
+        }, 0);
       });
       document.getElementById('time-select').value = '15m';
       document.getElementById('pred-1').value = '';
@@ -566,6 +738,7 @@ async function main() {
     })()`);
     await clickId(send, session, 'btn-search');
     await waitFn(send, session, `document.getElementById('results-region') && document.getElementById('results-region').textContent.includes('synthetic aging row') ? 'yes' : ''`);
+    await waitIdle(send, session);
     const agingId = await ev(send, session, `(() => { const b = document.querySelector('button[id$="-open"]'); return b ? b.id : ''; })()`);
     say('NEED_CLOCK row');
     await nextLine();
@@ -600,10 +773,124 @@ async function main() {
     say('NEED_CLOCK reset');
     await nextLine();
 
+    say('STEP live');
+    await waitIdle(send, session);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while live is off');
+    await ev(send, session, `(() => {
+      document.getElementById('time-select').value = '15m';
+      document.getElementById('severity-select').value = '1';
+      document.getElementById('msg-term-1').value = '';
+      const pred = document.getElementById('pred-1');
+      if (pred) pred.value = '';
+      const pval = document.querySelector('#filters input[name=pval]');
+      if (pval) pval.value = '';
+      const src = document.getElementById('source-select');
+      for (const opt of src.options) opt.selected = opt.value === 'src_demo_api';
+    })()`);
+    await clickId(send, session, 'btn-live-start');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Receiving') return '';
+      if (!document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`, 10000);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while receiving');
+    say('NEED_LIVE');
+    await nextLine();
+    await waitFn(send, session, `document.querySelectorAll('#live-rows li').length >= 12 && document.getElementById('live-rows').textContent.includes('synthetic live arrived') ? 'yes' : ''`, 12000);
+    const dupes = await ev(send, session, `(() => {
+      const ids = [...document.querySelectorAll('#live-rows li')].map((el) => el.getAttribute('data-ingest-id'));
+      return new Set(ids).size === ids.length ? 'ok' : 'dup';
+    })()`);
+    if (dupes !== 'ok') throw new Error('live rows duplicated');
+    const scrollState = await ev(send, session, `(() => {
+      const rows = document.getElementById('live-rows');
+      if (!rows || rows.scrollHeight <= rows.clientHeight + 1) return 'short';
+      rows.scrollTop = rows.scrollHeight;
+      rows.dispatchEvent(new Event('scroll', { bubbles: false }));
+      return document.getElementById('live-trigger') ? 'still' : 'paused';
+    })()`);
+    say('live-scroll ' + scrollState);
+    if (scrollState === 'short') throw new Error('live rows did not overflow');
+    if (scrollState === 'still') throw new Error('scroll did not pause polling');
+    if (scrollState === 'paused') {
+      await ev(send, session, `(() => {
+        const rows = document.getElementById('live-rows');
+        rows.scrollTop = 0;
+        rows.dispatchEvent(new Event('scroll', { bubbles: false }));
+      })()`);
+      await waitFn(send, session, `document.getElementById('live-trigger') && document.getElementById('live-status').textContent === 'Live: Receiving' ? 'yes' : ''`);
+    }
+    if (SHOT_DIR) {
+      await shotOf(send, session, 'live-receiving-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-receiving-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    await clickId(send, session, 'btn-live-pause');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Paused') return '';
+      if (document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`);
+    if (SHOT_DIR) {
+      await shotOf(send, session, 'live-paused-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-paused-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    say('NEED_LIVE_HOLD');
+    await nextLine();
+    await sleep(1200);
+    const held = await ev(send, session, `document.getElementById('live-rows').textContent.includes('synthetic live while paused') ? 'shown' : 'hidden'`);
+    if (held !== 'hidden') throw new Error('paused live showed a new row');
+    await clickId(send, session, 'btn-live-resume');
+    await waitFn(send, session, `document.getElementById('live-rows').textContent.includes('synthetic live while paused') ? 'yes' : ''`, 12000);
+    await clickId(send, session, 'btn-live-pause');
+    await waitFn(send, session, `(() => {
+      const st = document.getElementById('live-status');
+      if (!st || st.textContent !== 'Live: Paused') return '';
+      if (document.getElementById('live-trigger')) return '';
+      if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
+      return 'yes';
+    })()`);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while paused');
+    say('NEED_GAP');
+    await nextLine();
+    await clickId(send, session, 'btn-live-resume');
+    await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Gap detected' ? 'yes' : ''`, 15000);
+    if (await gapShown(send, session) !== 'visible') throw new Error('search gap hidden in the gap state');
+    if (SHOT_DIR) {
+      await shotOf(send, session, 'live-gap-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-gap-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+      await ev(send, session, `document.getElementById('live-cursor-received').value = 'nope'`);
+      await clickId(send, session, 'btn-live-resume');
+      await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Query invalid' ? 'yes' : ''`, 10000);
+      if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible on query invalid');
+      await shotOf(send, session, 'live-error-desktop.png', '#live-panel');
+      await metrics(send, session, 390, 844, true);
+      await shotOf(send, session, 'live-error-390.png', '#live-panel');
+      await metrics(send, session, 1280, 900, false);
+    }
+    const widths = [];
+    widths.push(await boxWidth(send, session, 1280));
+    widths.push(await boxWidth(send, session, 390));
+    widths.push(await boxWidth(send, session, 360));
+    await metrics(send, session, 1280, 900, false);
+    if (SHOT_DIR) fs.writeFileSync(path.join(SHOT_DIR, 'scroll.json'), JSON.stringify(widths, null, 2));
+
     say('STEP no-js');
     const off = await newSession(send, { disableJS: true });
     await send('Page.navigate', { url: BASE + '/investigate' }, off);
     await waitHTML(send, off, 'id="btn-search-implicit"', 10000);
+    const noJSGap = await waitHTML(send, off, 'id="btn-search-gap"', 10000);
+    if (!noJSGap.includes('id="btn-search-gap" hidden')) throw new Error('no-js search gap is not hidden');
+    if (await hasBox(send, off, '#btn-search-gap')) throw new Error('no-js search gap is visible');
     const termNode = await domQuery(send, off, '#msg-term-1');
     await send('DOM.focus', { nodeId: termNode }, off);
     await send('Input.insertText', { text: 'checkout' }, off);
@@ -658,6 +945,7 @@ async function main() {
       return el.textContent.indexOf('Session expired.') === 0 && link && link.getAttribute('href') === '/login' && link.textContent === 'Sign in' ? 'yes' : '';
     })()`);
 
+    }
     if (csp.length) throw new Error('CSP console errors: ' + csp.join(' | '));
     say('PASS');
   } catch (e) {

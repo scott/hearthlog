@@ -72,6 +72,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.searchPOST(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/investigate/detail":
 		s.detailPOST(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/investigate/live":
+		s.livePOST(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/experimental/skeleton/batches":
 		s.ingest(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/batches":

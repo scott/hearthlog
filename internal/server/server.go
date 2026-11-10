@@ -21,6 +21,7 @@ type Server struct {
 	sessionHash [32]byte
 	sessionExp  time.Time
 	csrf        string
+	live        liveHub
 }
 
 func New(store *sqlite.Store, readToken, writeToken, origin string) (*Server, error) {

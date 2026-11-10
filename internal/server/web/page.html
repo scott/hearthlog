@@ -13,13 +13,14 @@
 </head>
 <body>
 <a class="skiplink" href="#investigation">Skip to main content</a>
-<header><h1>Hearthlog</h1><p class="banner">Historical search. Live is separate and is not on this page.</p></header>
+<header><h1>Hearthlog</h1><p class="banner">Historical search, plus a live tail of new events.</p></header>
 <main id="investigation" tabindex="-1" hx-sync="#investigation:replace">
 <div class="layout">
 {{template "filters" .}}
 <div class="content">
 {{template "results-body" .}}
 {{template "detail-body" .}}
+{{template "live-panel" .}}
 </div>
 </div>
 <p id="status" aria-live="polite" tabindex="-1" data-code="{{.Code}}"{{if eq .Focus "status"}} autofocus{{end}}>{{.Status}}</p>

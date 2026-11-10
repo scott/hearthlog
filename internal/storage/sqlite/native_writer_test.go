@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -945,5 +946,46 @@ func TestUnknownScopeWritesNothing(t *testing.T) {
 	logs, receipts, wm := snap(t, s)
 	if logs != 0 || receipts != 0 || wm != 0 {
 		t.Fatalf("logs=%d receipts=%d wm=%d", logs, receipts, wm)
+	}
+}
+
+func TestReceiptWarnOncePerSpike(t *testing.T) {
+	resetReceiptSpike()
+	t.Cleanup(resetReceiptSpike)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s, _ := newStore(t)
+	future := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+	wall := future.Add(-time.Hour)
+	s.clock.Store(func() time.Time { return future })
+	if _, err := s.CommitNative(context.Background(), demoScope, mustNative(t, "92000000-0000-4000-8000-000000000001", 1, "spike", future, 32), 16); err != nil {
+		t.Fatal(err)
+	}
+	s.clock.Store(func() time.Time { return wall })
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("92000000-0000-4000-8000-%012d", i+2)
+		if _, err := s.CommitNative(context.Background(), demoScope, mustNative(t, id, 1, "pinned", wall, 33+i), 16); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := bytes.Count(buf.Bytes(), []byte("receipt_hi ahead of wall clock")); n != 1 {
+		t.Fatalf("first spike warns=%d\n%s", n, buf.String())
+	}
+	s.clock.Store(func() time.Time { return future.Add(time.Second) })
+	if _, err := s.CommitNative(context.Background(), demoScope, mustNative(t, "92000000-0000-4000-8000-000000000008", 1, "caught", future.Add(time.Second), 40), 16); err != nil {
+		t.Fatal(err)
+	}
+	s.clock.Store(func() time.Time { return wall })
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("92000000-0000-4000-8000-%012d", i+9)
+		if _, err := s.CommitNative(context.Background(), demoScope, mustNative(t, id, 1, "again", wall, 41+i), 16); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := bytes.Count(buf.Bytes(), []byte("receipt_hi ahead of wall clock")); n != 2 {
+		t.Fatalf("second spike warns=%d\n%s", n, buf.String())
 	}
 }
