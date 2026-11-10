@@ -12,7 +12,11 @@ const AGING_FROM = process.env.AGING_FROM || '';
 const AGING_TO = process.env.AGING_TO || '';
 const SHOT_DIR = process.env.E2E_SHOT_DIR || '';
 
-function say(s) { fs.writeSync(1, s + '\n'); }
+let step = 'boot';
+function say(s) {
+  if (s.startsWith('STEP ') || s.startsWith('NEED_') || s.startsWith('live-')) step = s;
+  fs.writeSync(1, s + '\n');
+}
 
 const pendingLines = [];
 let lineWait = null;
@@ -35,7 +39,16 @@ process.stdin.on('data', (chunk) => {
 });
 function nextLine() {
   if (pendingLines.length) return Promise.resolve(pendingLines.shift());
-  return new Promise((resolve) => { lineWait = resolve; });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (lineWait) lineWait = null;
+      reject(new Error('timeout waiting for harness reply at ' + step));
+    }, 45000);
+    lineWait = (line) => {
+      clearTimeout(timer);
+      resolve(line);
+    };
+  });
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -133,13 +146,13 @@ function connect(url) {
       else resolve(msg.result || {});
     }
   });
-  function send(method, params, sessionId) {
+  function send(method, params, sessionId, timeoutMs) {
     const id = ++seq;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error('devtools timeout ' + method));
-      }, 20000);
+      }, timeoutMs || 20000);
       pending.set(id, {
         resolve(v) { clearTimeout(timer); resolve(v); },
         reject(e) { clearTimeout(timer); reject(e); }
@@ -158,6 +171,57 @@ function noteCSP(text) {
     csp.push(text);
   }
 }
+
+const TRACE_SRC = `(function(){
+if (window.__hxlog) return;
+window.__hxlog = [];
+function push(s){
+  window.__hxlog.push(String(s).replace(/\\s+/g, ' ').slice(0, 480));
+  if (window.__hxlog.length > 24) window.__hxlog.shift();
+}
+function idOf(el){
+  if (!el || !el.getAttribute) return '';
+  return el.getAttribute('id') || el.tagName || '';
+}
+document.addEventListener('htmx:beforeRequest', function(e){
+  var d = e.detail || {};
+  var elt = d.elt || e.target;
+  if (d.xhr) d.xhr.__hlElt = idOf(elt);
+  var path = d.path || (d.requestConfig && d.requestConfig.path) || '';
+  push('before ' + idOf(elt) + ' ' + path);
+}, true);
+document.addEventListener('htmx:abort', function(e){
+  var d = e.detail || {};
+  push('abort-event ' + idOf(d.elt || e.target));
+}, true);
+document.addEventListener('submit', function(e){
+  push('submit ' + idOf(e.target) + ' by ' + idOf(e.submitter));
+}, true);
+window.addEventListener('pagehide', function(){ push('pagehide ' + location.pathname); });
+var origOpen = XMLHttpRequest.prototype.open;
+XMLHttpRequest.prototype.open = function(method, url){
+  this.__hlMethod = method;
+  this.__hlURL = String(url || '');
+  return origOpen.apply(this, arguments);
+};
+var origSend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.send = function(){
+  var url = this.__hlURL || '';
+  if (url.indexOf('/investigate/detail') !== -1) {
+    var stack = '';
+    try { stack = (new Error('xhr.send')).stack || ''; } catch (err) { stack = ''; }
+    push('xhr.send ' + (this.__hlElt || '') + ' ' + url + ' ' + stack);
+  }
+  return origSend.apply(this, arguments);
+};
+var origAbort = XMLHttpRequest.prototype.abort;
+XMLHttpRequest.prototype.abort = function(){
+  var stack = '';
+  try { stack = (new Error('xhr.abort')).stack || ''; } catch (err) { stack = ''; }
+  push('xhr.abort ' + (this.__hlElt || '') + ' ' + (this.__hlMethod || '') + ' ' + (this.__hlURL || '') + ' ' + stack);
+  return origAbort.apply(this, arguments);
+};
+})();`;
 
 async function launchChrome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-e2e-'));
@@ -203,6 +267,7 @@ async function newSession(send, opts) {
   const attached = await send('Target.attachToTarget', { targetId: created.targetId, flatten: true });
   const session = attached.sessionId;
   await send('Page.enable', {}, session);
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: TRACE_SRC }, session);
   await send('Runtime.enable', {}, session);
   await send('DOM.enable', {}, session);
   await send('Log.enable', {}, session);
@@ -276,7 +341,7 @@ async function diag(send, session) {
         generation: gens,
         sequence: seqs,
         activeHTML: a ? a.outerHTML : '',
-        hx: (window.__hxlog || []).join(' | ')
+        hx: (window.__hxlog || []).slice(-8).join(' | ')
       });
     })()`);
   } catch (e) {
@@ -303,7 +368,7 @@ async function diag(send, session) {
     xSequence: headerValue(rec.headers, 'x-sequence'),
     body: oneLine(body, 180)
   };
-  return 'debug=' + oneLine(page, 700) + ' lastReq=' + oneLine(JSON.stringify(req), 900);
+  return 'debug=' + oneLine(page, 3500) + ' lastReq=' + oneLine(JSON.stringify(req), 900);
 }
 
 async function waitIdle(send, session) {
@@ -355,28 +420,6 @@ async function login(send, session) {
   await waitIdle(send, session);
   await ev(send, session, `document.querySelector('button[type=submit]').click()`);
   await waitFn(send, session, `location.pathname === '/investigate' && document.getElementById('btn-search-implicit') ? 'yes' : ''`, 10000);
-  if (!noJS.has(session)) await armHXLog(send, session);
-}
-
-async function armHXLog(send, session) {
-  await ev(send, session, `(() => {
-    if (window.__hxlog) return 'ok';
-    window.__hxlog = [];
-    function idOf(el) {
-      if (!el || !el.getAttribute) return '';
-      return el.getAttribute('id') || el.tagName || '';
-    }
-    function push(kind, e) {
-      const d = e.detail || {};
-      const elt = d.elt || e.target;
-      const path = (d.path || (d.requestConfig && d.requestConfig.path) || '');
-      window.__hxlog.push(kind + ' ' + idOf(elt) + ' ' + path);
-      if (window.__hxlog.length > 40) window.__hxlog.shift();
-    }
-    document.body.addEventListener('htmx:beforeRequest', (e) => push('before', e));
-    document.body.addEventListener('htmx:abort', (e) => push('abort', e));
-    return 'ok';
-  })()`);
 }
 
 async function gapShown(send, session) {
@@ -470,7 +513,36 @@ async function runLatency(send, session, say) {
   if (p95 >= 2000) throw new Error('first row p95 ' + p95 + ' samples ' + samples.join(','));
 }
 
+let beatSend = null;
+let beatSession = null;
+let beatBusy = false;
+function startHeartbeat() {
+  setInterval(() => {
+    if (!beatSend || !beatSession) {
+      say('HEARTBEAT step=' + step + ' cdp=no-session');
+      return;
+    }
+    if (beatBusy) return;
+    beatBusy = true;
+    const started = Date.now();
+    beatSend('Runtime.evaluate', {
+      expression: `(() => {
+        const live = document.getElementById('live-status');
+        return document.readyState + ' ' + (live ? live.textContent : '');
+      })()`,
+      returnByValue: true
+    }, beatSession, 1000).then((v) => {
+      const value = v && v.result ? v.result.value : '';
+      say('HEARTBEAT step=' + step + ' cdp=ok ms=' + (Date.now() - started) + ' ' + oneLine(value, 80));
+    }).catch((e) => {
+      say('HEARTBEAT step=' + step + ' cdp=timeout ms=' + (Date.now() - started) + ' ' + oneLine(String(e && e.message || e), 120));
+    }).finally(() => { beatBusy = false; });
+  }, 3000);
+}
+
 async function main() {
+  say('STEP boot');
+  startHeartbeat();
   if (!BASE || !TOKEN || !CHROME || !AGING_FROM || !AGING_TO) {
     throw new Error('missing BASE, READ_TOKEN, CHROME, or aging window');
   }
@@ -492,6 +564,8 @@ async function main() {
     });
 
     const session = await newSession(send, {});
+    beatSend = send;
+    beatSession = session;
     say('STEP login');
     await login(send, session);
     if (process.env.E2E_LATENCY === '1') {

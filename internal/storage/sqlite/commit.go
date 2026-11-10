@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"example.invalid/hearthlog/internal/model"
@@ -118,7 +119,7 @@ func nilIfEmpty(s *string) any {
 //
 // A forward spike pins receipt_hi. Later rows keep that receipt until the
 // wall clock catches up, and retention, which uses receipt time, waits
-// with them. A gap of more than a second is logged.
+// with them. A gap of more than a second is logged once per spike.
 func monotonicReceipt(ctx context.Context, tx *sql.Tx, wall time.Time) (time.Time, error) {
 	var hi, mx int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key='receipt_hi'), 0)`).Scan(&hi); err != nil {
@@ -132,15 +133,47 @@ func monotonicReceipt(ctx context.Context, tx *sql.Tx, wall time.Time) (time.Tim
 	}
 	got := wall.UTC().Truncate(time.Microsecond).UnixMicro()
 	if hi > got {
-		if behind := hi - got; behind > int64(time.Second/time.Microsecond) {
-			slog.Warn("receipt_hi ahead of wall clock", "behind_us", behind)
-		}
+		noteReceiptSpike(hi - got)
 		got = hi
+	} else {
+		noteReceiptCaughtUp()
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key, value) VALUES('receipt_hi', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(got, 10)); err != nil {
 		return time.Time{}, err
 	}
 	return time.UnixMicro(got).UTC(), nil
+}
+
+// receiptSpike logs one warning for a run of commits that stay ahead of the
+// wall clock. The next warning waits until a commit is no longer ahead.
+var receiptSpike struct {
+	mu     sync.Mutex
+	active bool
+}
+
+func noteReceiptSpike(behind int64) {
+	if behind <= int64(time.Second/time.Microsecond) {
+		return
+	}
+	receiptSpike.mu.Lock()
+	defer receiptSpike.mu.Unlock()
+	if receiptSpike.active {
+		return
+	}
+	receiptSpike.active = true
+	slog.Warn("receipt_hi ahead of wall clock", "behind_us", behind)
+}
+
+func noteReceiptCaughtUp() {
+	receiptSpike.mu.Lock()
+	receiptSpike.active = false
+	receiptSpike.mu.Unlock()
+}
+
+func resetReceiptSpike() {
+	receiptSpike.mu.Lock()
+	receiptSpike.active = false
+	receiptSpike.mu.Unlock()
 }
 
 func (s *Store) now() time.Time {

@@ -50,15 +50,21 @@ Package server has no skip and no build tag that drops them under the race
 detector. CI's race step runs them too. `TestLivePollConcurrentNoLoss` is
 in the sqlite package and also passes under `-race`.
 
-`TestBrowserE2E -count=100` passed 100/100 in 487.526s, with 0 failures.
+`TestBrowserE2E -count=100` passed 100/100 in 641.217s, with 0 failures and no stalls.
 Each run includes the live step (`live-scroll paused`, pause holds a new
 row, resume shows it) and the existing no-JS and session-expired steps.
 The harness waits until no element has `htmx-request`, `htmx-swapping`, or
 `htmx-settling` before each click, including before the aging-row clock
-step. A DevTools command times out after 20s, and a step that is quiet for
-20s logs a goroutine dump. The full log is
-`hearthlog/slice07-e2e-count100.log` in the agent store and
-`/opt/cursor/artifacts/slice07-e2e-count100.log`. CI runs the browser test
+step. A DevTools command times out after 20s. A heartbeat evaluates
+`document.readyState` so a quiet harness wait is distinct from a renderer
+that has stopped answering. If node prints nothing for 30s, the test sends
+SIGUSR2 (`node --report-on-signal`), keeps the diagnostic report, and kills
+the process. A missing reply from the Go side fails after 45s. The htmx log
+is installed with `Page.addScriptToEvaluateOnNewDocument`, so it survives
+the full reload from Add term and Remove term. `XMLHttpRequest.abort`
+records the element id and a stack. The full log is
+`hearthlog/slice07-e2e-count100-r3.log` in the agent store and
+`/opt/cursor/artifacts/slice07-e2e-count100-r3.log`. CI runs the browser test
 once, with a 180s timeout. One local run is about 5s. Node tests are 10
 pass, 0 fail, including the short-page and stuck-request cases.
 
@@ -87,7 +93,9 @@ the wall clock and the last persisted receipt (`receipt_hi`, and
 step cannot hide a row from the keyset. A forward spike pins `receipt_hi`.
 Later rows keep that receipt until the wall clock catches up, and retention
 waits with them. A clamp of more than one second logs
-`receipt_hi ahead of wall clock`. Each poll reads the watermark on the
+`receipt_hi ahead of wall clock` once for that spike. Later commits that
+stay ahead do not log again. A commit that is no longer ahead arms the
+next spike. Each poll reads the watermark on the
 reader connection and ignores higher ingest ids. Rows are ordered by that
 pair, so equal receipt times are not skipped or repeated. Filters run in Go
 after the scan, and the cursor moves to the last examined row, including
