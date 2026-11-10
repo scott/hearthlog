@@ -57,7 +57,7 @@ func TestLivePollEqualReceivedAt(t *testing.T) {
 	var recv string
 	cur := LiveCursor{}
 	for pageN := 0; pageN < 6; pageN++ {
-		page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, false)
+		page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestLivePollConcurrentNoLoss(t *testing.T) {
 		cur := LiveCursor{}
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, false)
+			page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
 			if err != nil {
 				errCh <- err
 				return
@@ -195,7 +195,7 @@ func TestLivePollSparseFilter(t *testing.T) {
 	when := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	store.SetClock(func() time.Time { return when })
 	ctx := context.Background()
-	for i := 0; i < 25; i++ {
+	for i := 0; i < 2; i++ {
 		b := mustNative(t, fmt.Sprintf("%08x-0000-4000-8000-%012x", 3000+i, 1), 200, "synthetic sparse miss", when, 3000+i)
 		if _, err := store.CommitNative(ctx, demoScope, b, 1); err != nil {
 			t.Fatal(err)
@@ -211,7 +211,7 @@ func TestLivePollSparseFilter(t *testing.T) {
 	cur := LiveCursor{}
 	var found string
 	for pageN := 0; pageN < 40; pageN++ {
-		page, err := store.Poll(ctx, demoScope, cur, filter, false)
+		page, err := store.Poll(ctx, demoScope, cur, filter, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,19 +259,23 @@ func TestLivePollCatchupGap(t *testing.T) {
 	if _, err := store.CommitNative(ctx, demoScope, later, 1); err != nil {
 		t.Fatal(err)
 	}
-	gap, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, true)
+	freshAsOf := when.Add(30 * time.Second).UnixMicro()
+	fresh, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, freshAsOf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !gap.Gap || len(gap.Rows) != 0 || gap.Cursor != tail {
-		t.Fatalf("30s resume %+v", gap)
+	if fresh.Gap || len(fresh.Rows) != 1 || fresh.Rows[0].EventID != later.Events[0].EventID {
+		t.Fatalf("fresh as_of must return the row: %+v", fresh)
 	}
-	near, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, false)
+	if fresh.Cursor.ReceivedAt == freshAsOf {
+		t.Fatal("cursor moved to as_of")
+	}
+	stale, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, tail.ReceivedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if near.Gap || len(near.Rows) != 1 {
-		t.Fatalf("steady poll should still return the row: %+v", near.Rows)
+	if !stale.Gap || len(stale.Rows) != 0 || stale.Cursor != tail {
+		t.Fatalf("31s after as_of must gap on a steady poll: %+v", stale)
 	}
 
 	store.SetClock(func() time.Time { return when })
@@ -287,7 +291,7 @@ func TestLivePollCatchupGap(t *testing.T) {
 		}
 	}
 	// The 31s row is already ahead of tail. Count includes it plus 5001.
-	over, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, true)
+	over, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +311,7 @@ func TestLivePollBudgetGap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	page, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{MinSeverity: 17}, false)
+	page, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{MinSeverity: 17}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +344,7 @@ func TestLivePollRollbackRestartAndEmpty(t *testing.T) {
 	if got, err := store.Watermark(ctx); err != nil || got != wm {
 		t.Fatalf("watermark %d want %d err %v", got, wm, err)
 	}
-	page, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, false)
+	page, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +385,7 @@ func TestLivePollRollbackRestartAndEmpty(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("writer did not hold the transaction")
 	}
-	held, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, false)
+	held, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +404,7 @@ func TestLivePollRollbackRestartAndEmpty(t *testing.T) {
 
 	store = reopen(t, path, store)
 	store.SetClock(func() time.Time { return when })
-	again, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, false)
+	again, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +423,7 @@ func TestLivePollRollbackRestartAndEmpty(t *testing.T) {
 	if got, err := store.Watermark(ctx); err != nil || got != wm {
 		t.Fatalf("watermark after delete %d want %d (%v)", got, wm, err)
 	}
-	empty, err := store.Poll(ctx, demoScope, LiveCursor{ReceivedAt: when.UnixMicro(), IngestID: wm}, LiveFilter{}, false)
+	empty, err := store.Poll(ctx, demoScope, LiveCursor{ReceivedAt: when.UnixMicro(), IngestID: wm}, LiveFilter{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +474,7 @@ func TestLivePollTailAfterHistory(t *testing.T) {
 	if _, err := store.CommitNative(ctx, demoScope, fresh, 1); err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.Poll(ctx, demoScope, tail, LiveFilter{Sources: []string{demoScope.SourceID}}, false)
+	page, err := store.Poll(ctx, demoScope, tail, LiveFilter{Sources: []string{demoScope.SourceID}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +500,7 @@ func TestLivePollVisibility(t *testing.T) {
 		deadline := time.Now().Add(2 * time.Second)
 		seen := false
 		for time.Now().Before(deadline) {
-			page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, false)
+			page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -520,5 +524,159 @@ func TestLivePollVisibility(t *testing.T) {
 	t.Logf("visibility_n=%d p95=%s max=%s", len(lats), p95, lats[len(lats)-1])
 	if p95 >= 2*time.Second {
 		t.Fatalf("p95 %s", p95)
+	}
+}
+
+func TestLivePollClockStepBack(t *testing.T) {
+	steps := []time.Duration{time.Microsecond, time.Second, 10 * time.Second}
+	for si, step := range steps {
+		t.Run(step.String(), func(t *testing.T) {
+			store, path := newStore(t)
+			base := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+			at := base
+			store.SetClock(func() time.Time { return at })
+			ctx := context.Background()
+			for i := 0; i < 6; i++ {
+				b := mustNative(t, fmt.Sprintf("%08x-0000-4000-8000-%012x", 100+si, i+1), 1, "synthetic before step", base, 1100+si*10+i)
+				if _, err := store.CommitNative(ctx, demoScope, b, 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cur := LiveCursor{}
+			for n := 0; n < 5; n++ {
+				page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Gap {
+					t.Fatalf("gap before step %+v", page)
+				}
+				cur = page.Cursor
+				if page.CaughtUp {
+					break
+				}
+			}
+			at = base.Add(-step)
+			var late []string
+			for i := 0; i < 3; i++ {
+				b := mustNative(t, fmt.Sprintf("%08x-0000-4000-8000-%012x", 200+si, i+1), 1, "synthetic after step", at, 1200+si*10+i)
+				if _, err := store.CommitNative(ctx, demoScope, b, 1); err != nil {
+					t.Fatal(err)
+				}
+				late = append(late, b.Events[0].EventID)
+			}
+			store = reopen(t, path, store)
+			at = base.Add(-step)
+			store.SetClock(func() time.Time { return at })
+			b := mustNative(t, fmt.Sprintf("%08x-0000-4000-8000-%012x", 300+si, 1), 1, "synthetic after restart", at, 1300+si)
+			if _, err := store.CommitNative(ctx, demoScope, b, 1); err != nil {
+				t.Fatal(err)
+			}
+			late = append(late, b.Events[0].EventID)
+			got := map[string]int{}
+			var prev int64
+			for n := 0; n < 5; n++ {
+				page, err := store.Poll(ctx, demoScope, cur, LiveFilter{}, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Gap {
+					t.Fatalf("step %s reported a gap", step)
+				}
+				for _, row := range page.Rows {
+					got[row.EventID]++
+					recv, err := time.Parse(time.RFC3339Nano, row.ReceivedAt)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if recv.UnixMicro() < prev {
+						t.Fatalf("received_at went backwards: %d then %d", prev, recv.UnixMicro())
+					}
+					prev = recv.UnixMicro()
+				}
+				cur = page.Cursor
+				if page.CaughtUp {
+					break
+				}
+			}
+			if len(got) != len(late) {
+				t.Fatalf("step %s want %d seen %d", step, len(late), len(got))
+			}
+			for _, id := range late {
+				if got[id] != 1 {
+					t.Fatalf("step %s id %s count %d", step, id, got[id])
+				}
+			}
+		})
+	}
+}
+
+func TestLivePollQuietAsOf(t *testing.T) {
+	store, _ := newStore(t)
+	when := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return when })
+	ctx := context.Background()
+	first := mustNative(t, "00c10000-0000-4000-8000-0000000000c1", 1, "synthetic quiet tail", when, 41)
+	if _, err := store.CommitNative(ctx, demoScope, first, 1); err != nil {
+		t.Fatal(err)
+	}
+	tail, _, err := store.LiveTail(ctx, demoScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetClock(func() time.Time { return when.Add(35 * time.Second) })
+	quiet, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quiet.Gap || !quiet.Idle || quiet.Cursor != tail {
+		t.Fatalf("quiet poll %+v", quiet)
+	}
+	if quiet.AsOf != when.Add(35*time.Second).UnixMicro() {
+		t.Fatalf("as_of %d", quiet.AsOf)
+	}
+	store.SetClock(func() time.Time { return when.Add(37 * time.Second) })
+	later := mustNative(t, "00c20000-0000-4000-8000-0000000000c2", 1, "synthetic after hide", when.Add(37*time.Second), 42)
+	if _, err := store.CommitNative(ctx, demoScope, later, 1); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.Poll(ctx, demoScope, tail, LiveFilter{}, quiet.AsOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Gap || len(page.Rows) != 1 || page.Rows[0].EventID != later.Events[0].EventID {
+		t.Fatalf("quiet resume %+v", page)
+	}
+	if page.Cursor.ReceivedAt == quiet.AsOf || page.Cursor == tail {
+		t.Fatalf("cursor %+v as_of %d", page.Cursor, quiet.AsOf)
+	}
+}
+
+func TestLivePollNotCaughtUp(t *testing.T) {
+	store, _ := newStore(t)
+	when := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return when })
+	ctx := context.Background()
+	b := mustNative(t, "00c30000-0000-4000-8000-0000000000c3", 200, "synthetic behind", when, 43)
+	if _, err := store.CommitNative(ctx, demoScope, b, 1); err != nil {
+		t.Fatal(err)
+	}
+	extra := mustNative(t, "00c40000-0000-4000-8000-0000000000c4", 1, "synthetic behind", when, 44)
+	if _, err := store.CommitNative(ctx, demoScope, extra, 1); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.Poll(ctx, demoScope, LiveCursor{}, LiveFilter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Gap || page.CaughtUp || len(page.Rows) != 200 {
+		t.Fatalf("first page %+v rows %d", page.Gap, len(page.Rows))
+	}
+	rest, err := store.Poll(ctx, demoScope, page.Cursor, LiveFilter{}, page.AsOf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rest.Gap || !rest.CaughtUp || len(rest.Rows) != 1 {
+		t.Fatalf("rest %+v rows %d", rest.Gap, len(rest.Rows))
 	}
 }

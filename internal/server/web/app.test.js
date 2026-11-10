@@ -504,6 +504,8 @@ function liveEnv() {
   gen.value = '1';
   make('input', 'live-cursor-received').value = '0';
   make('input', 'live-cursor-id').value = '0';
+  const asOf = make('input', 'live-as-of');
+  asOf.value = '0';
   make('input', 'live-severity').value = '1';
   const pause = make('button', 'btn-live-pause');
   pause.hidden = true;
@@ -528,13 +530,15 @@ function liveEnv() {
       (bag[ev] = bag[ev] || []).push(cb);
     }
   };
+  const kicks = [];
   const sandbox = {
     document: doc,
     window: { addEventListener() {}, location: { origin: 'http://localhost:8080' } },
     htmx: {
       on: (ev, cb) => { htmxListeners[ev] = cb; },
       process: (node) => { processed.push(node); },
-      remove: (node) => { if (node && node.remove) node.remove(); }
+      remove: (node) => { if (node && node.remove) node.remove(); },
+      trigger: (el, name) => { kicks.push(name); }
     },
     WeakMap, WeakSet, URL, Uint8Array,
     location: { origin: 'http://localhost:8080' },
@@ -587,7 +591,7 @@ function liveEnv() {
     }
     incoming.appendChild(root);
   }
-  return { elements, doc, htmxListeners, processed, fire, sandbox, rows, status, pause, resume, client, gen, incoming, filters, form, xhr, request, batch };
+  return { elements, doc, htmxListeners, processed, fire, sandbox, rows, status, pause, resume, client, gen, incoming, filters, form, xhr, request, batch, kicks, asOf };
 }
 
 test('live polling backs off, pauses, dedups and prunes', () => {
@@ -603,7 +607,7 @@ test('live polling backs off, pauses, dedups and prunes', () => {
   env.htmxListeners['htmx:afterSwap']({ detail: { xhr: start, target: { id: 'live-ack' } } });
   const trig = env.elements['live-trigger'];
   assert.ok(trig, 'trigger mounted');
-  assert.strictEqual(trig.getAttribute('hx-trigger'), 'every 1000ms');
+  assert.strictEqual(trig.getAttribute('hx-trigger'), 'every 1000ms, live-now');
   assert.strictEqual(trig.getAttribute('hx-sync'), '#live-trigger:drop');
   assert.strictEqual(trig.getAttribute('hx-vals'), '{"intent":"poll"}');
   assert.strictEqual(env.status.textContent, 'Live: Receiving');
@@ -630,7 +634,11 @@ test('live polling backs off, pauses, dedups and prunes', () => {
   const idle = env.xhr({ 'X-Live-Idle': '1', 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2000' });
   env.request('/investigate/live', 'poll', idle);
   env.htmxListeners['htmx:afterSwap']({ detail: { xhr: idle, target: { id: 'live-incoming' } } });
-  assert.strictEqual(env.elements['live-trigger'].getAttribute('hx-trigger'), 'every 2000ms');
+  assert.strictEqual(env.elements['live-trigger'].getAttribute('hx-trigger'), 'every 2000ms, live-now');
+  const idleAgain = env.xhr({ 'X-Live-Idle': '1', 'X-Live-Caught': '1', 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2000' });
+  env.request('/investigate/live', 'poll', idleAgain);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: idleAgain, target: { id: 'live-incoming' } } });
+  assert.strictEqual(env.elements['live-trigger'].getAttribute('data-every'), '2000');
 
   env.doc.visibilityState = 'hidden';
   env.fire('visibilitychange', env.doc);
@@ -643,7 +651,7 @@ test('live polling backs off, pauses, dedups and prunes', () => {
   const back = env.xhr({ 'X-Live-Idle': '0', 'X-Live-Cursor-Received': '100', 'X-Live-Cursor-Id': '2001' });
   env.request('/investigate/live', 'resume', back);
   env.htmxListeners['htmx:afterSwap']({ detail: { xhr: back, target: { id: 'live-incoming' } } });
-  assert.strictEqual(env.elements['live-trigger'].getAttribute('hx-vals'), '{"intent":"poll"}');
+  assert.ok(env.elements['live-trigger'].getAttribute('hx-vals').includes('resume'));
 
   env.rows.scrollTop = 40;
   env.fire('scroll', env.rows);
@@ -657,4 +665,39 @@ test('live polling backs off, pauses, dedups and prunes', () => {
   assert.strictEqual(env.pause.hidden, true);
   assert.strictEqual(env.resume.hidden, false);
   assert.strictEqual(env.elements['live-trigger'], undefined);
+});
+
+test('a short page polls again and a finished request does not stick', () => {
+  const env = liveEnv();
+  env.fire('click', env.elements['btn-live-start']);
+  env.batch([8], false, { recv: '40', id: '8' });
+  const behind = env.xhr({
+    'X-Live-Idle': '0',
+    'X-Live-Caught': '0',
+    'X-Live-As-Of': '4242',
+    'X-Live-Cursor-Received': '40',
+    'X-Live-Cursor-Id': '8'
+  });
+  behind.readyState = 1;
+  assert.strictEqual(env.request('/investigate/live', 'poll', behind), false);
+  env.htmxListeners['htmx:afterSwap']({ detail: { xhr: behind, target: { id: 'live-incoming' } } });
+  assert.ok(env.kicks.includes('live-now'));
+  assert.strictEqual(env.asOf.value, '4242');
+  assert.strictEqual(env.elements['live-trigger'].getAttribute('data-every'), '1000');
+
+  const stuck = env.xhr({});
+  stuck.readyState = 1;
+  assert.strictEqual(env.request('/investigate/live', 'poll', stuck), false);
+  stuck.readyState = 4;
+  const next = env.xhr({});
+  next.readyState = 1;
+  assert.strictEqual(env.request('/investigate/live', 'poll', next), false);
+
+  env.fire('click', env.elements['btn-live-pause']);
+  env.htmxListeners['htmx:sendError']({ detail: { xhr: next } });
+  assert.strictEqual(env.status.textContent, 'Live: Paused');
+  env.fire('click', env.elements['btn-live-resume']);
+  const resumed = env.xhr({});
+  resumed.readyState = 1;
+  assert.strictEqual(env.request('/investigate/live', 'resume', resumed), false);
 });

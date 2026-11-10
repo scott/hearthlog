@@ -90,6 +90,8 @@ type view struct {
 	LiveState       string
 	LiveReceived    string
 	LiveIngest      string
+	LiveAsOf        string
+	LiveCaught      bool
 	LiveIdle        bool
 }
 

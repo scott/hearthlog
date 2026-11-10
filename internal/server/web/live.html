@@ -18,6 +18,7 @@
 <input type="hidden" name="live_gen" id="live-gen" value="1">
 <input type="hidden" name="cursor_received" id="live-cursor-received" value="0">
 <input type="hidden" name="cursor_id" id="live-cursor-id" value="0">
+<input type="hidden" name="as_of" id="live-as-of" value="0">
 <input type="hidden" name="severity" id="live-severity" value="1">
 <div class="toolbar">
 <button type="submit" id="btn-live-start" name="intent" value="start" hx-post="/investigate/live" hx-target="#live-ack" hx-swap="outerHTML" hx-include="#live-form" hx-sync="#btn-live-start:drop">Start live</button>
@@ -34,11 +35,11 @@
 {{end}}
 
 {{define "live-ack"}}
-<div id="live-ack" data-state="{{.LiveState}}" data-cursor-received="{{.LiveReceived}}" data-cursor-id="{{.LiveIngest}}" hidden>{{.LiveStatus}}</div>
+<div id="live-ack" data-state="{{.LiveState}}" data-cursor-received="{{.LiveReceived}}" data-cursor-id="{{.LiveIngest}}" data-as-of="{{.LiveAsOf}}" hidden>{{.LiveStatus}}</div>
 {{end}}
 
 {{define "live-batch"}}
-<div id="live-batch" data-cursor-received="{{.LiveReceived}}" data-cursor-id="{{.LiveIngest}}" data-idle="{{if .LiveIdle}}1{{else}}0{{end}}">
+<div id="live-batch" data-cursor-received="{{.LiveReceived}}" data-cursor-id="{{.LiveIngest}}" data-as-of="{{.LiveAsOf}}" data-caught="{{if .LiveCaught}}1{{else}}0{{end}}" data-idle="{{if .LiveIdle}}1{{else}}0{{end}}">
 <ul class="results">
 {{range .Rows}}
 <li data-ingest-id="{{.IngestID}}" data-received="{{.ReceivedAt}}">

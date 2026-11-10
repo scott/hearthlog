@@ -113,6 +113,7 @@ func (s *Store) ensureSearchSchema(ctx context.Context) error {
 		)`,
 		logsImmutableTrigger,
 		`INSERT OR IGNORE INTO metadata(key, value) VALUES('cursor_epoch', '1')`,
+		`INSERT OR IGNORE INTO metadata(key, value) VALUES('receipt_hi', '0')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.writer.ExecContext(ctx, stmt); err != nil {

@@ -54,6 +54,7 @@ button:disabled{background:#d7deea;color:#1a1a2e}
 #live-panel{min-width:0}
 #live-rows{max-height:8rem;overflow-y:auto;min-width:0}
 #live-panel .toolbar button{width:auto}
+#btn-search-gap{color:#f4f7ff;background:transparent;display:block;flex:1 1 100%;margin:.35rem 0 0;padding:.2rem 0;text-decoration:underline;width:auto}
 .d0{margin-left:0}
 .d1{margin-left:.75rem}
 .d2{margin-left:1.5rem}

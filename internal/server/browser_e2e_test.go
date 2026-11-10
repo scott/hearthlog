@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,9 @@ func TestClientContracts(t *testing.T) {
 	}
 	if strings.Contains(sheet, "--accent:#1565c0") {
 		t.Fatal("link accent must stay the lighter blue")
+	}
+	if !strings.Contains(sheet, "#btn-search-gap{color:#f4f7ff;") {
+		t.Fatal("search gap link must use the light text color")
 	}
 
 	store, ts, readTok, _, _ := newTestApp(t)
@@ -258,10 +262,32 @@ func TestBrowserE2E(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		dumped := false
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if dumped || time.Since(time.Unix(0, last.Load())) < 20*time.Second {
+					continue
+				}
+				dumped = true
+				buf := make([]byte, 1<<20)
+				n := runtime.Stack(buf, true)
+				t.Logf("GOROUTINES after a quiet step\n%s", buf[:n])
+			}
+		}
+	}()
 	passed := false
 	sc := bufio.NewScanner(stdout)
 	for sc.Scan() {
 		line := sc.Text()
+		last.Store(time.Now().UnixNano())
 		t.Log(line)
 		switch line {
 		case "NEED_CLOCK row":
@@ -321,6 +347,87 @@ func TestBrowserE2E(t *testing.T) {
 	}
 	waitErr := cmd.Wait()
 	if !passed || waitErr != nil {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Logf("GOROUTINES\n%s", buf[:n])
 		t.Fatalf("browser e2e failed: %v\n%s", waitErr, stderr.String())
+	}
+}
+
+func TestLiveBrowserP95(t *testing.T) {
+	chrome := chromePath(t)
+	store, ts, readTok, _, _ := newTestApp(t)
+	origin := "http://" + ts.Listener.Addr().String()
+	S := time.Date(2026, 6, 15, 12, 0, 30, 0, time.UTC)
+	store.SetClock(func() time.Time { return S })
+	scope := model.Scope{WorkspaceID: "ws_demo_a", SourceID: "src_demo_api"}
+	if _, err := store.Commit(context.Background(), scope, oneEvent(t, 80, S, "synthetic latency seed", `{"k":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", filepath.Join(filepath.Dir(file), "browser_e2e.js"))
+	cmd.Env = append(os.Environ(),
+		"BASE="+origin,
+		"READ_TOKEN="+readTok,
+		"CHROME="+chrome,
+		"E2E_LATENCY=1",
+		"AGING_FROM="+S.Format(time.RFC3339Nano),
+		"AGING_TO="+S.Add(time.Minute).Format(time.RFC3339Nano),
+	)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var p95 string
+	passed := false
+	n := 0
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		line := sc.Text()
+		t.Log(line)
+		switch {
+		case strings.HasPrefix(line, "NEED_LATENCY "):
+			msg := strings.TrimPrefix(line, "NEED_LATENCY ")
+			n++
+			if _, err := store.Commit(context.Background(), scope, oneEvent(t, 8000+n, S, msg, `{"k":1}`)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(stdin, "ok\n"); err != nil {
+				t.Fatal(err)
+			}
+		case strings.HasPrefix(line, "LATENCY_P95_MS "):
+			p95 = strings.TrimPrefix(line, "LATENCY_P95_MS ")
+		case line == "PASS":
+			passed = true
+		}
+		if strings.HasPrefix(line, "FAIL") {
+			t.Errorf("%s", line)
+		}
+	}
+	waitErr := cmd.Wait()
+	if !passed || waitErr != nil {
+		t.Fatalf("browser latency failed: %v\n%s", waitErr, stderr.String())
+	}
+	ms, err := time.ParseDuration(p95 + "ms")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("browser_idle_p95=%s", ms)
+	if ms >= 2*time.Second {
+		t.Fatalf("browser p95 %s", ms)
 	}
 }

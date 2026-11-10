@@ -2,11 +2,13 @@ package server
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"regexp"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"example.invalid/hearthlog/internal/model"
@@ -24,42 +26,152 @@ const (
 	copyLiveError     = "Live: Error"
 	copyLiveNoJS      = "Live requires JavaScript. Use Refresh for historical search."
 
-	liveSlotMax = 2
-	liveSlotTTL = 15 * time.Second
+	liveSlotMax     = 2
+	liveSlotTTL     = 15 * time.Second
+	liveMinInterval = 200 * time.Millisecond
 )
 
 var liveClientRe = regexp.MustCompile(`^[a-z0-9]{8,32}$`)
 
-type liveHub struct {
-	mu sync.Mutex
-	m  map[string]map[string]time.Time
+// livePace is the clock for the per-slot minimum interval. Slot expiry uses
+// the store clock. Tests replace this; production uses time.Now.
+var livePace atomic.Value
+
+// liveGate blocks inside a live request after the slot is marked busy.
+// Tests use it to hold one request in flight.
+var liveGate atomic.Pointer[func()]
+
+func paceNow() time.Time {
+	if fn, ok := livePace.Load().(func() time.Time); ok && fn != nil {
+		return fn()
+	}
+	return time.Now()
 }
 
-func (h *liveHub) allow(ws, client string, now time.Time) bool {
+type liveSlot struct {
+	session string
+	seen    time.Time
+	last    time.Time
+	busy    bool
+	behind  bool
+	asOf    int64
+}
+
+type liveBegin struct {
+	asOf   int64
+	status int
+}
+
+type liveHub struct {
+	mu sync.Mutex
+	m  map[string]map[string]*liveSlot
+}
+
+func (h *liveHub) begin(ws, session, client string, now, pace time.Time, start bool) liveBegin {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.m == nil {
-		h.m = map[string]map[string]time.Time{}
+		h.m = map[string]map[string]*liveSlot{}
 	}
 	slots := h.m[ws]
 	if slots == nil {
-		slots = map[string]time.Time{}
+		slots = map[string]*liveSlot{}
 		h.m[ws] = slots
 	}
-	for id, seen := range slots {
-		if now.Sub(seen) > liveSlotTTL {
+	for id, slot := range slots {
+		if !slot.busy && now.Sub(slot.seen) > liveSlotTTL {
 			delete(slots, id)
 		}
 	}
-	if _, ok := slots[client]; ok {
-		slots[client] = now
-		return true
+	slot := slots[client]
+	if slot != nil && slot.session != session {
+		return liveBegin{status: http.StatusForbidden}
 	}
-	if len(slots) >= liveSlotMax {
-		return false
+	if slot == nil {
+		if start {
+			evictOwnSlot(slots, session)
+		}
+		if len(slots) >= liveSlotMax {
+			return liveBegin{status: http.StatusTooManyRequests}
+		}
+		slot = &liveSlot{session: session}
+		slots[client] = slot
 	}
-	slots[client] = now
-	return true
+	if slot.busy {
+		return liveBegin{status: http.StatusTooManyRequests}
+	}
+	if !start && !slot.behind && !slot.last.IsZero() && pace.Sub(slot.last) < liveMinInterval {
+		return liveBegin{status: http.StatusTooManyRequests}
+	}
+	slot.busy = true
+	slot.seen = now
+	slot.behind = false
+	if !start {
+		slot.last = pace
+	}
+	return liveBegin{asOf: slot.asOf, status: http.StatusOK}
+}
+
+func evictOwnSlot(slots map[string]*liveSlot, session string) {
+	if len(slots) < liveSlotMax {
+		return
+	}
+	var oldestID string
+	var oldest time.Time
+	for id, slot := range slots {
+		if slot.session != session || slot.busy {
+			continue
+		}
+		if oldestID == "" || slot.seen.Before(oldest) {
+			oldestID = id
+			oldest = slot.seen
+		}
+	}
+	if oldestID != "" {
+		delete(slots, oldestID)
+	}
+}
+
+func (h *liveHub) finish(ws, client string, behind bool, asOf int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	slots := h.m[ws]
+	if slots == nil {
+		return
+	}
+	slot := slots[client]
+	if slot == nil {
+		return
+	}
+	slot.busy = false
+	slot.behind = behind
+	if asOf > slot.asOf {
+		slot.asOf = asOf
+	}
+}
+
+func (h *liveHub) stop(ws, session, client string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	slots := h.m[ws]
+	if slots == nil {
+		return
+	}
+	slot := slots[client]
+	if slot == nil || slot.session != session {
+		return
+	}
+	delete(slots, client)
+}
+
+func (s *Server) sessionKey() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var zero [32]byte
+	if s.sessionHash == zero {
+		return ""
+	}
+	return hex.EncodeToString(s.sessionHash[:])
 }
 
 func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
@@ -69,9 +181,19 @@ func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
 	}
 	intent := r.PostFormValue("intent")
 	switch intent {
-	case "start", "poll", "resume":
+	case "start", "poll", "resume", "stop":
 	default:
 		s.liveFail(w, r, http.StatusBadRequest, "invalid", copyLiveInvalid)
+		return
+	}
+	if intent == "stop" {
+		client := r.PostFormValue("client")
+		if !liveClientRe.MatchString(client) {
+			s.liveFail(w, r, http.StatusBadRequest, "invalid", copyLiveInvalid)
+			return
+		}
+		s.live.stop(demoWorkspace, s.sessionKey(), client)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	cur, err := liveCursorFromForm(r)
@@ -92,6 +214,11 @@ func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
 		s.liveFail(w, r, http.StatusBadRequest, "invalid", copyLiveInvalid)
 		return
 	}
+	clientAsOf, err := parseCursorField(r.PostFormValue("as_of"))
+	if err != nil {
+		s.liveFail(w, r, http.StatusBadRequest, "invalid", copyLiveInvalid)
+		return
+	}
 	f, err := parseUI(r)
 	if err != nil {
 		s.liveFail(w, r, http.StatusBadRequest, "invalid", copyLiveInvalid)
@@ -107,30 +234,52 @@ func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
 		s.liveFail(w, r, status, code, copyLiveInvalid)
 		return
 	}
-	if !s.live.allow(demoWorkspace, client, s.now()) {
+	begun := s.live.begin(demoWorkspace, s.sessionKey(), client, s.now(), paceNow(), intent == "start")
+	if begun.status == http.StatusTooManyRequests {
 		w.Header().Set("Retry-After", "5")
 		s.liveFail(w, r, http.StatusTooManyRequests, "throttled", copyLiveThrottled)
 		return
 	}
+	if begun.status != http.StatusOK {
+		s.liveFail(w, r, begun.status, "invalid", copyLiveInvalid)
+		return
+	}
+	var behind bool
+	var asOfOut int64
+	defer func() { s.live.finish(demoWorkspace, client, behind, asOfOut) }()
+	if gate := liveGate.Load(); gate != nil && *gate != nil {
+		(*gate)()
+	}
+	asOf := begun.asOf
+	if asOf == 0 {
+		asOf = clientAsOf
+	}
+	nowU := s.now().UTC().UnixMicro()
+	if asOf > nowU {
+		asOf = nowU
+	}
 	switch intent {
 	case "start":
-		s.liveStart(w, r, csrf, gen)
+		asOfOut = s.liveStart(w, r, csrf, gen)
 	case "resume":
-		s.livePoll(w, r, csrf, gen, cur, filter, true)
+		behind, asOfOut = s.livePoll(w, r, csrf, gen, cur, filter, asOf)
 	default:
-		s.livePoll(w, r, csrf, gen, cur, filter, false)
+		behind, asOfOut = s.livePoll(w, r, csrf, gen, cur, filter, asOf)
 	}
 }
 
-func (s *Server) liveStart(w http.ResponseWriter, r *http.Request, csrf, gen string) {
+func (s *Server) liveStart(w http.ResponseWriter, r *http.Request, csrf, gen string) int64 {
+	asOf := s.now().UTC().UnixMicro()
 	cur, _, err := s.store.LiveTail(r.Context(), demoScope())
 	if err != nil {
 		s.writeLiveStoreErr(w, r, err)
-		return
+		return 0
 	}
 	v := s.blankView(r, csrf)
 	v.LiveReceived = strconv.FormatInt(cur.ReceivedAt, 10)
 	v.LiveIngest = strconv.FormatInt(cur.IngestID, 10)
+	v.LiveAsOf = strconv.FormatInt(asOf, 10)
+	v.LiveCaught = true
 	v.Generation = gen
 	v.Sequence = "1"
 	if r.Header.Get("HX-Request") != "true" {
@@ -138,27 +287,30 @@ func (s *Server) liveStart(w http.ResponseWriter, r *http.Request, csrf, gen str
 		v.LiveState = "off"
 		v.Status = copyLiveNoJS
 		s.render(w, r, "page", v, http.StatusOK)
-		return
+		return asOf
 	}
 	v.LiveStatus = copyLiveOn
 	v.LiveState = "receiving"
 	s.writeLive(w, r, "live-ack", v, http.StatusOK)
+	return asOf
 }
 
-func (s *Server) livePoll(w http.ResponseWriter, r *http.Request, csrf, gen string, cur sqlite.LiveCursor, filter sqlite.LiveFilter, resume bool) {
-	page, err := s.store.Poll(r.Context(), demoScope(), cur, filter, resume)
+func (s *Server) livePoll(w http.ResponseWriter, r *http.Request, csrf, gen string, cur sqlite.LiveCursor, filter sqlite.LiveFilter, asOf int64) (bool, int64) {
+	page, err := s.store.Poll(r.Context(), demoScope(), cur, filter, asOf)
 	if err != nil {
 		s.writeLiveStoreErr(w, r, err)
-		return
+		return false, 0
 	}
 	if page.Gap {
 		s.writeLiveGap(w, r, csrf, page)
-		return
+		return false, 0
 	}
 	v := s.blankView(r, csrf)
 	v.Rows = page.Rows
 	v.LiveReceived = strconv.FormatInt(page.Cursor.ReceivedAt, 10)
 	v.LiveIngest = strconv.FormatInt(page.Cursor.IngestID, 10)
+	v.LiveAsOf = strconv.FormatInt(page.AsOf, 10)
+	v.LiveCaught = page.CaughtUp
 	v.LiveIdle = page.Idle
 	v.LiveState = "receiving"
 	v.LiveStatus = copyLiveOn
@@ -170,9 +322,10 @@ func (s *Server) livePoll(w http.ResponseWriter, r *http.Request, csrf, gen stri
 		v.LiveStatus = copyLiveNoJS
 		v.SuppressResults = true
 		s.render(w, r, "page", v, http.StatusOK)
-		return
+		return !page.CaughtUp, page.AsOf
 	}
 	s.writeLive(w, r, "live-batch", v, http.StatusOK)
+	return !page.CaughtUp, page.AsOf
 }
 
 func (s *Server) writeLiveStoreErr(w http.ResponseWriter, r *http.Request, err error) {
@@ -239,6 +392,14 @@ func (s *Server) writeLive(w http.ResponseWriter, r *http.Request, kind string, 
 		w.Header().Set("X-Live-Idle", "1")
 	} else {
 		w.Header().Set("X-Live-Idle", "0")
+	}
+	if v.LiveCaught {
+		w.Header().Set("X-Live-Caught", "1")
+	} else {
+		w.Header().Set("X-Live-Caught", "0")
+	}
+	if v.LiveAsOf != "" {
+		w.Header().Set("X-Live-As-Of", v.LiveAsOf)
 	}
 	w.Header().Set("X-Live-Status", v.LiveState)
 	s.render(w, r, kind, v, status)
@@ -352,7 +513,7 @@ func (s *Server) liveAuth(w http.ResponseWriter, r *http.Request) (string, bool)
 	}
 	allowed := map[string]bool{
 		"csrf": true, "intent": true, "client": true, "live_gen": true,
-		"cursor_received": true, "cursor_id": true, "severity": true,
+		"cursor_received": true, "cursor_id": true, "as_of": true, "severity": true,
 		"source": true, "term": true, "path": true, "op": true, "ptype": true, "pval": true,
 	}
 	multi := map[string]bool{

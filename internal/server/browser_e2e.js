@@ -136,7 +136,14 @@ function connect(url) {
   function send(method, params, sessionId) {
     const id = ++seq;
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error('devtools timeout ' + method));
+      }, 20000);
+      pending.set(id, {
+        resolve(v) { clearTimeout(timer); resolve(v); },
+        reject(e) { clearTimeout(timer); reject(e); }
+      });
       const payload = { id, method, params: params || {} };
       if (sessionId) payload.sessionId = sessionId;
       ws.send(JSON.stringify(payload));
@@ -397,6 +404,30 @@ async function pressEnter(send, session, selector) {
   }, session);
 }
 
+async function runLatency(send, session, say) {
+  await clickId(send, session, 'btn-live-start');
+  await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Receiving' ? 'yes' : ''`);
+  const samples = [];
+  for (let i = 0; i < 20; i++) {
+    await waitFn(send, session, `(() => {
+      const el = document.getElementById('live-trigger');
+      return el && el.getAttribute('data-every') === '2000' ? 'yes' : '';
+    })()`, 15000);
+    await sleep(Math.floor(Math.random() * 1500));
+    const label = 'synthetic latency ' + String(i).padStart(2, '0');
+    const t0 = Date.now();
+    say('NEED_LATENCY ' + label);
+    await nextLine();
+    await waitFn(send, session, `document.getElementById('live-rows') && document.getElementById('live-rows').textContent.includes(${JSON.stringify(label)}) ? 'yes' : ''`, 8000);
+    samples.push(Date.now() - t0);
+  }
+  samples.sort((a, b) => a - b);
+  const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+  say('LATENCY_P95_MS ' + p95);
+  say('LATENCY_SAMPLES ' + samples.join(','));
+  if (p95 >= 2000) throw new Error('first row p95 ' + p95 + ' samples ' + samples.join(','));
+}
+
 async function main() {
   if (!BASE || !TOKEN || !CHROME || !AGING_FROM || !AGING_TO) {
     throw new Error('missing BASE, READ_TOKEN, CHROME, or aging window');
@@ -421,7 +452,9 @@ async function main() {
     const session = await newSession(send, {});
     say('STEP login');
     await login(send, session);
-
+    if (process.env.E2E_LATENCY === '1') {
+      await runLatency(send, session, say);
+    } else {
     say('STEP narrow');
     await metrics(send, session, 390, 844, true);
     const narrow = await ev(send, session, `document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 ? 'ok' : 'wide'`);
@@ -585,6 +618,7 @@ async function main() {
     })()`);
     await clickId(send, session, 'btn-search');
     await waitFn(send, session, `document.getElementById('results-region') && document.getElementById('results-region').textContent.includes('synthetic aging row') ? 'yes' : ''`);
+    await waitIdle(send, session);
     const agingId = await ev(send, session, `(() => { const b = document.querySelector('button[id$="-open"]'); return b ? b.id : ''; })()`);
     say('NEED_CLOCK row');
     await nextLine();
@@ -783,6 +817,7 @@ async function main() {
       return el.textContent.indexOf('Session expired.') === 0 && link && link.getAttribute('href') === '/login' && link.textContent === 'Sign in' ? 'yes' : '';
     })()`);
 
+    }
     if (csp.length) throw new Error('CSP console errors: ' + csp.join(' | '));
     say('PASS');
   } catch (e) {

@@ -46,13 +46,14 @@ func (f LiveFilter) active() bool {
 }
 
 // LivePage is one poll. Rows are closed before return. Gap is an explicit
-// hole: the scan budget tripped, or a resume was outside the catch-up cap.
-// Cursor is the highest examined (received_at, ingest_id). It does not move
-// on a gap.
+// hole: the scan budget tripped, or the rows still ahead exceed the catch-up
+// cap. Cursor is the highest examined (received_at, ingest_id). It does not
+// move on a gap, and it is never set to AsOf.
 type LivePage struct {
 	Rows      []model.Record
 	Cursor    LiveCursor
 	Watermark int64
+	AsOf      int64
 	Gap       bool
 	GapFrom   int64
 	GapTo     int64
@@ -126,9 +127,12 @@ func (s *Store) LiveTail(ctx context.Context, scope model.Scope) (LiveCursor, in
 // Poll reads at most 200 matching committed rows after cursor. The scan is
 // scoped to the workspace and stops at the watermark captured for this call.
 // Sparse filters advance the cursor past examined non-matches. A tripped
-// reader budget is a gap, not an empty page.
-func (s *Store) Poll(ctx context.Context, scope model.Scope, cursor LiveCursor, filter LiveFilter, resume bool) (LivePage, error) {
-	if scope.WorkspaceID == "" || cursor.ReceivedAt < 0 || cursor.IngestID < 0 {
+// reader budget is a gap, not an empty page. asOf is the server time of the
+// previous poll. The catch-up window is newest minus max(cursor, asOf), on
+// every poll, so quiet time before asOf is not a gap and the keyset cursor
+// stays on a real row.
+func (s *Store) Poll(ctx context.Context, scope model.Scope, cursor LiveCursor, filter LiveFilter, asOf int64) (LivePage, error) {
+	if scope.WorkspaceID == "" || cursor.ReceivedAt < 0 || cursor.IngestID < 0 || asOf < 0 {
 		return LivePage{}, ErrStorage
 	}
 	page := LivePage{Cursor: cursor}
@@ -138,19 +142,21 @@ func (s *Store) Poll(ctx context.Context, scope model.Scope, cursor LiveCursor, 
 			return err
 		}
 		page.Watermark = wm
+		page.AsOf = s.now().UTC().UnixMicro()
+		if asOf > page.AsOf {
+			asOf = page.AsOf
+		}
 		cutoff := retentionCutoff(s.now())
-		if resume {
-			budget.arm(stepLimit(ctx))
-			n, maxRecv, err := countAhead(ctx, conn, scope.WorkspaceID, cursor, wm, cutoff)
-			if err != nil {
-				return err
-			}
-			if catchupGap(cursor.ReceivedAt, maxRecv, n) {
-				page.Gap = true
-				page.GapFrom = cursor.ReceivedAt
-				page.GapTo = maxRecv
-				return nil
-			}
+		budget.arm(stepLimit(ctx))
+		n, maxRecv, err := countAhead(ctx, conn, scope.WorkspaceID, cursor, wm, cutoff)
+		if err != nil {
+			return err
+		}
+		if catchupGap(cursor.ReceivedAt, asOf, maxRecv, n) {
+			page.Gap = true
+			page.GapFrom = cursor.ReceivedAt
+			page.GapTo = maxRecv
+			return nil
 		}
 		budget.arm(stepLimit(ctx))
 		return s.scanLive(ctx, conn, scope.WorkspaceID, cursor, filter, wm, cutoff, &page)
@@ -178,18 +184,21 @@ func (s *Store) Poll(ctx context.Context, scope model.Scope, cursor LiveCursor, 
 	return page, nil
 }
 
-func catchupGap(cursorRecv, maxRecv int64, n int) bool {
+func catchupGap(cursorRecv, asOf, maxRecv int64, n int) bool {
 	if n > liveCatchupMax {
 		return true
 	}
-	if maxRecv <= 0 {
+	if n == 0 || maxRecv <= 0 {
 		return false
 	}
-	span := maxRecv - cursorRecv
-	if cursorRecv <= 0 {
-		span = maxRecv
+	base := cursorRecv
+	if asOf > base {
+		base = asOf
 	}
-	return span > liveCatchupWindow.Microseconds()
+	if base <= 0 {
+		return false
+	}
+	return maxRecv-base > liveCatchupWindow.Microseconds()
 }
 
 func countAhead(ctx context.Context, conn *sql.Conn, workspace string, cursor LiveCursor, wm, cutoff int64) (int, int64, error) {

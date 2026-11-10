@@ -95,13 +95,18 @@ func (s *Store) commitNativeOnce(ctx context.Context, scope model.Scope, b model
 		return nativeResult{}, ErrStorage
 	}
 	hashHex := hex.EncodeToString(sum[:])
-	now := s.now().UTC().Truncate(time.Microsecond)
+	wall := s.now().UTC().Truncate(time.Microsecond)
 
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return nativeResult{}, err
 	}
 	defer tx.Rollback()
+
+	now, err := monotonicReceipt(ctx, tx, wall)
+	if err != nil {
+		return nativeResult{}, err
+	}
 
 	var sources int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sources WHERE workspace_id=? AND source_id=?`, scope.WorkspaceID, scope.SourceID).Scan(&sources); err != nil {
@@ -132,7 +137,7 @@ func (s *Store) commitNativeOnce(ctx context.Context, scope model.Scope, b model
 	}
 
 	for i := range b.Events {
-		if err := model.AdmitEventTime(b.Events[i].EventTimeMicros, now); err != nil {
+		if err := model.AdmitEventTime(b.Events[i].EventTimeMicros, wall); err != nil {
 			return nativeResult{}, err
 		}
 	}
