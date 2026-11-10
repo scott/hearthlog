@@ -4,7 +4,7 @@
 <h2 id="results-heading" tabindex="-1"{{if and (eq .Focus "results") (eq .OriginID "")}} autofocus{{end}}>Results</h2>
 {{if .Window}}<p class="window">{{.Window}}</p>{{end}}
 {{if .Rows}}
-<form id="detail-form" method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML">
+<form id="detail-form" method="POST" action="/investigate/detail" hx-post="/investigate/detail" hx-target="#detail-region" hx-swap="outerHTML" hx-sync="this:drop">
 {{if .PageCursor}}{{template "cursor-only" .}}{{else}}{{template "frozen" .}}{{end}}
 </form>
 <ul class="results">

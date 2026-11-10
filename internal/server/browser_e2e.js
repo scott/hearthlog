@@ -275,7 +275,8 @@ async function diag(send, session) {
         liveTrigger: !!document.getElementById('live-trigger'),
         generation: gens,
         sequence: seqs,
-        activeHTML: a ? a.outerHTML : ''
+        activeHTML: a ? a.outerHTML : '',
+        hx: (window.__hxlog || []).join(' | ')
       });
     })()`);
   } catch (e) {
@@ -354,6 +355,47 @@ async function login(send, session) {
   await waitIdle(send, session);
   await ev(send, session, `document.querySelector('button[type=submit]').click()`);
   await waitFn(send, session, `location.pathname === '/investigate' && document.getElementById('btn-search-implicit') ? 'yes' : ''`, 10000);
+  if (!noJS.has(session)) await armHXLog(send, session);
+}
+
+async function armHXLog(send, session) {
+  await ev(send, session, `(() => {
+    if (window.__hxlog) return 'ok';
+    window.__hxlog = [];
+    function idOf(el) {
+      if (!el || !el.getAttribute) return '';
+      return el.getAttribute('id') || el.tagName || '';
+    }
+    function push(kind, e) {
+      const d = e.detail || {};
+      const elt = d.elt || e.target;
+      const path = (d.path || (d.requestConfig && d.requestConfig.path) || '');
+      window.__hxlog.push(kind + ' ' + idOf(elt) + ' ' + path);
+      if (window.__hxlog.length > 40) window.__hxlog.shift();
+    }
+    document.body.addEventListener('htmx:beforeRequest', (e) => push('before', e));
+    document.body.addEventListener('htmx:abort', (e) => push('abort', e));
+    return 'ok';
+  })()`);
+}
+
+async function gapShown(send, session) {
+  return await ev(send, session, `(() => {
+    const el = document.getElementById('btn-search-gap');
+    if (!el) return 'missing';
+    const cs = getComputedStyle(el);
+    return (cs.display !== 'none' && el.getClientRects().length > 0) ? 'visible' : 'hidden';
+  })()`);
+}
+
+async function hasBox(send, session, selector) {
+  const nodeId = await domQuery(send, session, selector);
+  try {
+    await send('DOM.getBoxModel', { nodeId }, session);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function jsOffHTML(send, session) {
@@ -543,12 +585,14 @@ async function main() {
         const path = (info && info.requestPath) || '';
         if (path.indexOf('/search') === -1) return;
         document.body.removeEventListener('htmx:afterSwap', onSwap);
-        document.getElementById('msg-term-1').value = 'commonwide';
-        document.getElementById('pred-1').value = 'task.attempt';
-        document.querySelector('#filters select[name=op]').value = 'eq';
-        document.querySelector('#filters select[name=ptype]').value = 'integer';
-        document.querySelector('#filters input[name=pval]').value = '999';
-        document.getElementById('btn-search').click();
+        setTimeout(function() {
+          document.getElementById('msg-term-1').value = 'commonwide';
+          document.getElementById('pred-1').value = 'task.attempt';
+          document.querySelector('#filters select[name=op]').value = 'eq';
+          document.querySelector('#filters select[name=ptype]').value = 'integer';
+          document.querySelector('#filters input[name=pval]').value = '999';
+          document.getElementById('btn-search').click();
+        }, 0);
       });
       document.getElementById('btn-search').click();
     })()`);
@@ -584,10 +628,12 @@ async function main() {
         const path = (info && info.requestPath) || '';
         if (path.indexOf('/search') === -1) return;
         document.body.removeEventListener('htmx:afterSwap', onSwap);
-        document.getElementById('time-select').value = 'custom';
-        document.getElementById('f-from').value = 'not-a-time';
-        document.getElementById('f-to').value = 'not-a-time';
-        document.getElementById('btn-search').click();
+        setTimeout(function() {
+          document.getElementById('time-select').value = 'custom';
+          document.getElementById('f-from').value = 'not-a-time';
+          document.getElementById('f-to').value = 'not-a-time';
+          document.getElementById('btn-search').click();
+        }, 0);
       });
       document.getElementById('time-select').value = '15m';
       document.getElementById('pred-1').value = '';
@@ -655,6 +701,7 @@ async function main() {
 
     say('STEP live');
     await waitIdle(send, session);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while live is off');
     await ev(send, session, `(() => {
       document.getElementById('time-select').value = '15m';
       document.getElementById('severity-select').value = '1';
@@ -674,6 +721,7 @@ async function main() {
       if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
       return 'yes';
     })()`, 10000);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while receiving');
     say('NEED_LIVE');
     await nextLine();
     await waitFn(send, session, `document.querySelectorAll('#live-rows li').length >= 12 && document.getElementById('live-rows').textContent.includes('synthetic live arrived') ? 'yes' : ''`, 12000);
@@ -735,11 +783,13 @@ async function main() {
       if (document.querySelector('.htmx-request, .htmx-swapping, .htmx-settling')) return '';
       return 'yes';
     })()`);
+    if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible while paused');
+    say('NEED_GAP');
+    await nextLine();
+    await clickId(send, session, 'btn-live-resume');
+    await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Gap detected' ? 'yes' : ''`, 15000);
+    if (await gapShown(send, session) !== 'visible') throw new Error('search gap hidden in the gap state');
     if (SHOT_DIR) {
-      say('NEED_GAP');
-      await nextLine();
-      await clickId(send, session, 'btn-live-resume');
-      await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Gap detected' ? 'yes' : ''`, 15000);
       await shotOf(send, session, 'live-gap-desktop.png', '#live-panel');
       await metrics(send, session, 390, 844, true);
       await shotOf(send, session, 'live-gap-390.png', '#live-panel');
@@ -747,6 +797,7 @@ async function main() {
       await ev(send, session, `document.getElementById('live-cursor-received').value = 'nope'`);
       await clickId(send, session, 'btn-live-resume');
       await waitFn(send, session, `document.getElementById('live-status') && document.getElementById('live-status').textContent === 'Live: Query invalid' ? 'yes' : ''`, 10000);
+      if (await gapShown(send, session) !== 'hidden') throw new Error('search gap visible on query invalid');
       await shotOf(send, session, 'live-error-desktop.png', '#live-panel');
       await metrics(send, session, 390, 844, true);
       await shotOf(send, session, 'live-error-390.png', '#live-panel');
@@ -763,6 +814,9 @@ async function main() {
     const off = await newSession(send, { disableJS: true });
     await send('Page.navigate', { url: BASE + '/investigate' }, off);
     await waitHTML(send, off, 'id="btn-search-implicit"', 10000);
+    const noJSGap = await waitHTML(send, off, 'id="btn-search-gap"', 10000);
+    if (!noJSGap.includes('id="btn-search-gap" hidden')) throw new Error('no-js search gap is not hidden');
+    if (await hasBox(send, off, '#btn-search-gap')) throw new Error('no-js search gap is visible');
     const termNode = await domQuery(send, off, '#msg-term-1');
     await send('DOM.focus', { nodeId: termNode }, off);
     await send('Input.insertText', { text: 'checkout' }, off);

@@ -43,6 +43,9 @@ func TestClientContracts(t *testing.T) {
 	if !strings.Contains(sheet, "#btn-search-gap{color:#f4f7ff;") {
 		t.Fatal("search gap link must use the light text color")
 	}
+	if !strings.Contains(sheet, "#btn-search-gap[hidden]{display:none}") {
+		t.Fatal("search gap link must stay undisplayed while hidden")
+	}
 
 	store, ts, readTok, _, _ := newTestApp(t)
 	origin := "http://" + ts.Listener.Addr().String()

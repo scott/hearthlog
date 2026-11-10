@@ -25,7 +25,7 @@ All interactions use fixed same-origin routes. `HX-Request` is a routing hint on
 
 ## Synchronization and Stale Response Handling
 
-*   **hx-sync:** All search/detail/paging requests use `hx-sync="#investigation:replace"`. New searches cancel older in-flight requests and invalidate the currently selected detail view.
+*   **hx-sync:** Search and paging requests use `hx-sync="#investigation:replace"`. New searches cancel older in-flight search requests and invalidate the currently selected detail view. Open details uses `hx-sync="this:drop"` on its own form, so a cancelled sibling request cannot abort that POST.
 *   **Generation & Sequence:** Server echoes submitted bounded query generation, selection ID, and request sequence as trusted scalars in the response.
 *   **Pre-Swap Validation:** An external `htmx:beforeSwap` handler (no inline scripts) validates generation, request sequence, and **selected-detail ID** against current DOM state **before** any DOM modification. Stale responses (including those targeting an older detail selection) are rejected and discarded. This occurs prior to `innerHTML` application.
 *   **Live Region:** `#live-region` uses append/prune logic per [LIVE.md](LIVE.md), not generic `innerHTML` replacement.

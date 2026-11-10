@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -114,6 +115,10 @@ func nilIfEmpty(s *string) any {
 // backward must not store a received_at behind a row the live keyset has
 // already passed. The floor is the metadata row plus the table max, so it
 // survives a restart and a delete of the newest row.
+//
+// A forward spike pins receipt_hi. Later rows keep that receipt until the
+// wall clock catches up, and retention, which uses receipt time, waits
+// with them. A gap of more than a second is logged.
 func monotonicReceipt(ctx context.Context, tx *sql.Tx, wall time.Time) (time.Time, error) {
 	var hi, mx int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM metadata WHERE key='receipt_hi'), 0)`).Scan(&hi); err != nil {
@@ -127,6 +132,9 @@ func monotonicReceipt(ctx context.Context, tx *sql.Tx, wall time.Time) (time.Tim
 	}
 	got := wall.UTC().Truncate(time.Microsecond).UnixMicro()
 	if hi > got {
+		if behind := hi - got; behind > int64(time.Second/time.Microsecond) {
+			slog.Warn("receipt_hi ahead of wall clock", "behind_us", behind)
+		}
 		got = hi
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO metadata(key, value) VALUES('receipt_hi', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(got, 10)); err != nil {

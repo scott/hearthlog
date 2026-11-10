@@ -421,6 +421,8 @@ return hex;
 }
 return "liveclient0000001";
 }
+// A duplicated tab copies sessionStorage, so both tabs share this client id.
+// The server then throttles the second tab.
 function initLiveClient(){
 var el=doc.getElementById("live-client");
 if(!el)return;

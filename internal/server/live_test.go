@@ -235,6 +235,27 @@ func TestLiveReloadDoesNotLockOut(t *testing.T) {
 	}
 }
 
+func TestLiveReplacedSessionStarts(t *testing.T) {
+	_, ts, readTok, _, _ := newTestApp(t)
+	origin := "http://" + ts.Listener.Addr().String()
+	first, csrf1 := login(t, ts, readTok)
+	for _, id := range []string{"oldsession1", "oldsession2"} {
+		code, _, body := postForm(t, first, origin, "/investigate/live", liveVals(csrf1, id, "start", "0", "0"), true)
+		if code != 200 {
+			t.Fatalf("first %s %d %s", id, code, body)
+		}
+	}
+	second, csrf2 := login(t, ts, readTok)
+	code, _, body := postForm(t, second, origin, "/investigate/live", liveVals(csrf2, "oldsession1", "start", "0", "0"), true)
+	if code != 200 || !strings.Contains(string(body), "Live: Receiving") {
+		t.Fatalf("same id after replace %d %s", code, body)
+	}
+	code, _, body = postForm(t, second, origin, "/investigate/live", liveVals(csrf2, "freshid001", "start", "0", "0"), true)
+	if code != 200 || !strings.Contains(string(body), "Live: Receiving") {
+		t.Fatalf("fresh id after replace %d %s", code, body)
+	}
+}
+
 func TestLiveMinIntervalAndInFlight(t *testing.T) {
 	store, ts, readTok, _, _ := newTestApp(t)
 	origin := "http://" + ts.Listener.Addr().String()

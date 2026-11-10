@@ -45,11 +45,10 @@ ok  example.invalid/hearthlog/internal/storage/sqlite  18.612s
 ok  example.invalid/hearthlog/internal/emitter         21.904s
 ```
 
-Same command with `-json`: 138 top-level tests, 344 including subtests,
-0 failures (cmd 1, examples 4, emitter 38/108, model 11/76, server 42/85,
-sqlite 42/70). Node: 9 pass, 0 fail. The server package includes one
-`TestBrowserE2E`. `TestLivePollConcurrentNoLoss` is in the sqlite package,
-so it passed under `-race`.
+`TestBrowserE2E` and `TestLiveBrowserP95` run inside `go test -race`.
+Package server has no skip and no build tag that drops them under the race
+detector. CI's race step runs them too. `TestLivePollConcurrentNoLoss` is
+in the sqlite package and also passes under `-race`.
 
 `TestBrowserE2E -count=100` passed 100/100 in 487.526s, with 0 failures.
 Each run includes the live step (`live-scroll paused`, pause holds a new
@@ -85,7 +84,10 @@ not leave the slot held.
 The poll cursor is `(received_at, ingest_id)`. `received_at` is the later of
 the wall clock and the last persisted receipt (`receipt_hi`, and
 `MAX(received_at)`), written in the commit transaction, so a backward clock
-step cannot hide a row from the keyset. Each poll reads the watermark on the
+step cannot hide a row from the keyset. A forward spike pins `receipt_hi`.
+Later rows keep that receipt until the wall clock catches up, and retention
+waits with them. A clamp of more than one second logs
+`receipt_hi ahead of wall clock`. Each poll reads the watermark on the
 reader connection and ignores higher ingest ids. Rows are ordered by that
 pair, so equal receipt times are not skipped or repeated. Filters run in Go
 after the scan, and the cursor moves to the last examined row, including
@@ -101,7 +103,7 @@ moved to `as_of`, so quiet time before that poll is not a gap.
 
 | Acceptance | Proof |
 |---|---|
-| 1s htmx polls, <=1 outstanding request/tab and <=2 Live clients/workspace; read only committed ingest IDs from the persisted single-writer watermark, including after rollback/restart | `app.js` mounts `every 1000ms, live-now` and keeps one `liveXhr`. Node test checks `hx-sync="#live-trigger:drop"`. The server allows one in-flight request per slot and a 200ms minimum interval, and returns 429 `Live: Throttled` with `Retry-After: 5` otherwise. `TestLiveMinIntervalAndInFlight` accepts the follow-up while a page is behind, rejects the next poll inside the interval, and accepts 1 of 16 overlapping polls. `TestLivePollHTTP` returns 429 for a third client id; a 16s clock step frees the slot. `TestLiveReloadDoesNotLockOut` starts three different ids and the same id three times, all 200, and `intent=stop` releases the slot. `TestLivePollRollbackRestartAndEmpty` aborts a watermark update, holds an uncommitted insert, reopens the file, and deletes every row. The rejected and uncommitted messages are absent, and the watermark is unchanged. |
+| 1s htmx polls, <=1 outstanding request/tab and <=2 Live clients/workspace; read only committed ingest IDs from the persisted single-writer watermark, including after rollback/restart | `app.js` mounts `every 1000ms, live-now` and keeps one `liveXhr`. Node test checks `hx-sync="#live-trigger:drop"`. The server allows one in-flight request per slot and a 200ms minimum interval, and returns 429 `Live: Throttled` with `Retry-After: 5` otherwise. `TestLiveMinIntervalAndInFlight` accepts the follow-up while a page is behind, rejects the next poll inside the interval, and accepts 1 of 16 overlapping polls. `TestLivePollHTTP` returns 429 for a third client id; a 16s clock step frees the slot. `TestLiveReloadDoesNotLockOut` starts three different ids and the same id three times, all 200, and `intent=stop` releases the slot. `TestLiveReplacedSessionStarts` fills both slots, replaces the session, and starts again with the same id and a fresh id, both 200. `TestLivePollRollbackRestartAndEmpty` aborts a watermark update, holds an uncommitted insert, reopens the file, and deletes every row. The rejected and uncommitted messages are absent, and the watermark is unchanged. |
 | Fetch <=200 rows/poll and advance by the highest examined authorized scan position even with sparse filters; bounded scan exhaustion yields an explicit gap, never silent loss | `liveMatchLimit` is 200. `TestLivePollSparseFilter` skips 400 non-matches in pages and then returns the one ERROR row. `TestLivePollNotCaughtUp` returns 200 rows with `CaughtUp` false, then the last row. `TestLivePollBudgetGap` sets the step cap to 1000 and expects a gap with the cursor unchanged. `TestLivePollClockStepBack` steps the clock back by 1us, 1s, and 10s, reopens the file, and still returns every row committed after the step. `TestLivePollEqualReceivedAt` and `TestLivePollPagesTiedRows` page 250 and 201 rows that share one `received_at`. |
 | Render escaped row partials; minimal external listener updates cursor/status, dedups and prunes the DOM to 1,000 rows before the next poll. No DB transaction is retained while the client reads HTML | `web/live.html` is a normal template. `TestLivePollHTTP` requires `&lt;script&gt;` and `&lt;div hx-get=` and rejects a raw `<script` tag, and `beforeRender` sees `ReaderInUse()==0`. The node test merges two equal ingest ids into one node and prunes 1005 rows to 1000, keeping the newest. |
 | Pause freezes rows and cancels polling; a hidden or closed tab stops; reconnect checks auth and <=5,000 events/30s catch-up, otherwise a gap plus a historical-search action | `TestBrowserE2E` scrolls the live list (`live-scroll paused`), pauses, inserts `synthetic live while paused`, and does not show it until Resume. The node test removes the trigger on `visibilitychange` hidden and remounts it on visible. The request after the tab is visible again is `intent=resume`, which is what the browser sends. `pagehide` posts `intent=stop` and then calls `clearLive`. `TestLivePollQuietAsOf` is 35s with no new rows, then 2s and one new row: the row is returned and the cursor is not `as_of`. `TestLivePollCatchupGap` gaps a steady poll when the newest row is 31s after `as_of`, and gaps 5001 rows. `TestLivePollHTTP` returns HTTP 410 with `X-Live-Gap-From` and `X-Live-Gap-To`. Search gap fills the historical from/to fields. A second login makes the old poll 401 and the existing session copy. |
@@ -178,9 +180,18 @@ at 1280 (1265 with the scrollbar gutter), 390, and 360.
   on the store clock, which is longer than the 2s idle cap. `pagehide` posts
   `intent=stop`, and a new start from the same session replaces that
   session's oldest slot, so three reloads are not locked out for the TTL.
-  The Search gap link is `#f4f7ff` on `#1a1a2e` (contrast 15.9:1) and takes
+  A replaced login drops every slot from the previous session before the
+  cap check, so the same id and a fresh id both start. `TestLiveReplacedSessionStarts`
+  covers that. `livePace` and `liveGate` are unset in a normal process.
+  They exist so tests can move the interval clock and hold one request.
+  A duplicated tab copies sessionStorage, so both tabs share one client id
+  and the second tab is throttled.
+  The Search gap link is `#f4f7ff` on `#1a1a2e` (contrast 15.9:1), takes
   its own row in the toolbar so it does not wrap into the buttons at 360
-  or 390.
+  or 390, and `#btn-search-gap[hidden]{display:none}` keeps it off the page
+  until the gap state. Open details posts `#detail-form` once
+  (`hx-sync="this:drop"`), so that request is not the shared investigation
+  slot.
 - Start uses `LiveTail`: the cursor is the newest retained `received_at` in
   the workspace and the current watermark. History is not replayed. A later
   row with that same receipt time and a higher ingest id is still returned.

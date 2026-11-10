@@ -33,12 +33,14 @@ const (
 
 var liveClientRe = regexp.MustCompile(`^[a-z0-9]{8,32}$`)
 
-// livePace is the clock for the per-slot minimum interval. Slot expiry uses
-// the store clock. Tests replace this; production uses time.Now.
+// livePace is the clock for the per-slot minimum interval. It stays unset in
+// a normal process, and paceNow then uses time.Now. Tests in this package
+// store a func() time.Time. Slot expiry uses the store clock, not this one.
 var livePace atomic.Value
 
 // liveGate blocks inside a live request after the slot is marked busy.
-// Tests use it to hold one request in flight.
+// It stays nil in a normal process. Tests store a func() to hold one
+// request in flight.
 var liveGate atomic.Pointer[func()]
 
 func paceNow() time.Time {
@@ -78,15 +80,15 @@ func (h *liveHub) begin(ws, session, client string, now, pace time.Time, start b
 		slots = map[string]*liveSlot{}
 		h.m[ws] = slots
 	}
+	// One process has one session. A replaced login must not keep the
+	// previous session's slots, or the same id is forbidden and a new id
+	// fills the cap until the TTL.
 	for id, slot := range slots {
-		if !slot.busy && now.Sub(slot.seen) > liveSlotTTL {
+		if slot.session != session || (!slot.busy && now.Sub(slot.seen) > liveSlotTTL) {
 			delete(slots, id)
 		}
 	}
 	slot := slots[client]
-	if slot != nil && slot.session != session {
-		return liveBegin{status: http.StatusForbidden}
-	}
 	if slot == nil {
 		if start {
 			evictOwnSlot(slots, session)
@@ -132,7 +134,7 @@ func evictOwnSlot(slots map[string]*liveSlot, session string) {
 	}
 }
 
-func (h *liveHub) finish(ws, client string, behind bool, asOf int64) {
+func (h *liveHub) finish(ws, session, client string, behind bool, asOf int64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	slots := h.m[ws]
@@ -140,7 +142,7 @@ func (h *liveHub) finish(ws, client string, behind bool, asOf int64) {
 		return
 	}
 	slot := slots[client]
-	if slot == nil {
+	if slot == nil || slot.session != session {
 		return
 	}
 	slot.busy = false
@@ -234,7 +236,8 @@ func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
 		s.liveFail(w, r, status, code, copyLiveInvalid)
 		return
 	}
-	begun := s.live.begin(demoWorkspace, s.sessionKey(), client, s.now(), paceNow(), intent == "start")
+	session := s.sessionKey()
+	begun := s.live.begin(demoWorkspace, session, client, s.now(), paceNow(), intent == "start")
 	if begun.status == http.StatusTooManyRequests {
 		w.Header().Set("Retry-After", "5")
 		s.liveFail(w, r, http.StatusTooManyRequests, "throttled", copyLiveThrottled)
@@ -246,7 +249,7 @@ func (s *Server) livePOST(w http.ResponseWriter, r *http.Request) {
 	}
 	var behind bool
 	var asOfOut int64
-	defer func() { s.live.finish(demoWorkspace, client, behind, asOfOut) }()
+	defer func() { s.live.finish(demoWorkspace, session, client, behind, asOfOut) }()
 	if gate := liveGate.Load(); gate != nil && *gate != nil {
 		(*gate)()
 	}
